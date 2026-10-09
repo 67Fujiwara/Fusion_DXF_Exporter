@@ -1,0 +1,14 @@
+{
+    "autodeskProduct": "Fusion",
+    "type": "addin",
+    "id": "b1449aa2-4b94-40e0-9398-1028e9c8d9b6",
+    "author": "panel-studio (based on aconz2/Fusion360Exporter)",
+    "description": {
+        "": "Bulk export f3d/f2d to STEP/PDF/DXF/DWG etc.",
+        "ja": "f3d/f2d を STEP・PDF・DXF・DWG などに一括書き出し"
+    },
+    "version": "1.0.0",
+    "runOnStartup": true,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}
