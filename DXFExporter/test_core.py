@@ -55,6 +55,8 @@ class FakeFolder:
     name: str
     dataFiles: List[FakeFile]
     dataFolders: list = field(default_factory=list)
+    id: str = ''
+    parentFolder: object = None
 
 
 class FakeDocument:
@@ -81,7 +83,7 @@ class FakeDocuments:
 
 def make_ctx(formats, **kw):
     app = SimpleNamespace(documents=FakeDocuments())
-    args = dict(app=app, folder=Path('/out'), formats=formats, projects_folders={}, use_active_folder=True,
+    args = dict(app=app, folder=Path('/out'), formats=formats, use_active_folder=True, project_id='', folder_ids=[],
                 unhide_all=False, save_sketches=False, num_versions=0, export_non_design_files=False,
                 open_hidden=False, include_subfolders=True)
     args.update(kw)
@@ -233,6 +235,20 @@ class ExportLoop(unittest.TestCase):
         a = SimpleNamespace(name='予備枠', parentFolder=None, parentProject=project)
         b = SimpleNamespace(name='DXF+STEP+PDF', parentFolder=a, parentProject=project)
         self.assertEqual(core.describe_folder(b), 'ウリセス / 予備枠 / DXF+STEP+PDF')
+
+    def test_resolve_folder_walks_the_saved_id_path(self):
+        leaf = FakeFolder('DXF+STEP+PDF', [], id='f3')
+        mid = FakeFolder('ウリセス', [], dataFolders=[FakeFolder('other', [], id='f9'), leaf], id='f2')
+        root = FakeFolder('root', [], dataFolders=[mid], id='f1')
+        project = SimpleNamespace(id='p1', rootFolder=root)
+        app = SimpleNamespace(data=SimpleNamespace(dataProjects=SimpleNamespace(
+            itemById=lambda pid: project if pid == 'p1' else None)))
+        self.assertIs(core.resolve_folder(app, 'p1', ['f2', 'f3']), leaf)
+        self.assertIs(core.resolve_folder(app, 'p1', []), root)
+        with self.assertRaises(Exception):
+            core.resolve_folder(app, 'p1', ['f2', 'missing'])
+        with self.assertRaises(Exception):
+            core.resolve_folder(app, 'nope', [])
 
     def test_tree_gen_builds_relative_path(self):
         a = SimpleNamespace(name='A', parentFolder=None)

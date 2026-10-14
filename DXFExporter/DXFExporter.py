@@ -14,7 +14,6 @@ Run it from UTILITIES > ADD-INS > Scripts and Add-Ins (Shift+S): pick DXFExporte
 """
 import base64
 import hashlib
-import itertools
 import json
 import os
 import re
@@ -29,7 +28,7 @@ from datetime import datetime
 from enum import Enum, StrEnum
 from functools import partial
 from pathlib import Path
-from typing import Dict, List, NamedTuple
+from typing import List, NamedTuple
 
 import adsk.core
 import adsk.drawing
@@ -46,11 +45,6 @@ log_fh = None
 log_t0 = 0.0
 
 handlers = []   # keep every event handler alive for the lifetime of the script
-
-# `project` or `project/folder` as shown in the dropdown -> (project id, folder id or None)
-project_folders_d = {}
-projects_loaded = False
-last_selected_projects = None
 
 last_settings_path = Path(__file__).parent / 'last_settings.json'
 
@@ -166,8 +160,9 @@ class Ctx(NamedTuple):
     app: adsk.core.Application
     folder: Path
     formats: List[Format]
-    projects_folders: Dict[str, List[str]]  # {projectId: [folderId+]}; [] means the whole project
-    use_active_folder: bool
+    use_active_folder: bool                 # True: the Data Panel's open folder; False: project_id/folder_ids
+    project_id: str
+    folder_ids: List[str]                   # folder ids from the project root (excluded) down to the target
     unhide_all: bool
     save_sketches: bool
     num_versions: int                       # -1 means all versions
@@ -183,7 +178,6 @@ class Ctx(NamedTuple):
         d.pop('app')
         d['folder'] = str(d['folder'])
         d['formats'] = [x.value for x in d['formats']]
-        d['projects_folders'] = {k: list(v) for k, v in d['projects_folders'].items()}
         return d
 
     def dumps(self):
@@ -195,7 +189,8 @@ class Ctx(NamedTuple):
         d['app'] = app
         d['folder'] = Path(d['folder'])
         d['formats'] = [FormatFromName[x] for x in d['formats']]
-        d['projects_folders'] = {k: set(v) for k, v in d['projects_folders'].items()}
+        d.setdefault('project_id', '')
+        d.setdefault('folder_ids', [])
         d.setdefault('open_hidden', True)
         d.setdefault('include_subfolders', True)
         return cls(**d)
@@ -652,27 +647,17 @@ def main(ctx: Ctx, progress=None) -> Counter:
     log(ctx.dumps())
     timings.clear()
 
-    items = []
-    if ctx.use_active_folder:
-        with timed('listing'):
+    with timed('listing'):
+        if ctx.use_active_folder:
             root_folder = ctx.app.data.activeFolder
-            root_ctx = ctx.extend(tree_gen(root_folder))
-        log(f'Open folder: {describe_folder(root_folder)}')
-        collect_files(root_ctx, root_folder, ctx.include_subfolders, items)
-    else:
-        for project_id, folder_ids in ctx.projects_folders.items():
-            with timed('listing'):
-                project = ctx.app.data.dataProjects.itemById(project_id)
-                root = project.rootFolder
-            if not folder_ids:
-                collect_files(ctx, root, ctx.include_subfolders, items)
-            elif set(folder_ids) == {root.id}:
-                collect_files(ctx, root, False, items)
-            else:
-                with timed('listing'):
-                    chosen = [f for f in root.dataFolders if f.id in folder_ids]
-                for folder in chosen:
-                    collect_files(ctx, folder, ctx.include_subfolders, items)
+            if root_folder is None:
+                raise Exception('No folder is open in the Data Panel; open one or pick a Project / Folder')
+        else:
+            root_folder = resolve_folder(ctx.app, ctx.project_id, ctx.folder_ids)
+        root_ctx = ctx.extend(tree_gen(root_folder))
+    log(f'Target folder: {describe_folder(root_folder)}')
+    items = []
+    collect_files(root_ctx, root_folder, ctx.include_subfolders, items)
 
     log(f'{len(items)} files to visit')
     return process_files(ctx, items, progress)
@@ -849,10 +834,13 @@ def message_box_traceback():
 class I(StrEnum):
     """UI input ids (also the keys of last_settings.json)"""
     directory = 'directory'
+    browse = 'browse'
     file_types = 'file_types'
     use_active_folder = 'use_active_folder'
-    show_folders = 'show_folders'
-    projects = 'projects'
+    project = 'project'
+    folder = 'folder'
+    target = 'target'                     # read-only text: which folder will be exported
+    include_subfolders = 'include_subfolders'
     unhide_all = 'unhide_all'
     version_count = 'version_count'
     all_versions = 'all_versions'
@@ -860,30 +848,170 @@ class I(StrEnum):
     version_separator_is_space = 'version_separator_is_space'
     export_non_design_files = 'export_non_design_files'
     open_hidden = 'open_hidden'
-    include_subfolders = 'include_subfolders'
-    target = 'target'   # read-only text: which folder will be exported
+    # settings-only keys (what the folder browser had chosen)
+    project_id = 'project_id'
+    folder_ids = 'folder_ids'
+    folder_path = 'folder_path'
 
 
-def populate_data_projects_list(dropdown, show_folders=False, selected=None):
-    """Fetch the project list from the hub.  This is the slow part of opening the dialog, so it only
-    runs when 'Download Open Folder' is off (see CommandCreatedHandler / InputChangedHandler)."""
-    global projects_loaded
-    app = adsk.core.Application.get()
-    dropdown.listItems.clear()
-    project_folders_d.clear()
-    selected = selected or []
+HERE = '（このフォルダ）'
+UP = '↑ 上のフォルダへ'
+NO_PROJECTS = 'プロジェクトがありません'
+PICKED_TEXT = 'Project / Folder で選んだフォルダ'
 
-    for project in app.data.dataProjects:
-        if show_folders:
-            for folder in itertools.chain([project.rootFolder], project.rootFolder.dataFolders):
-                name = f'{project.name}/{folder.name}'
-                project_folders_d[name] = (project.id, folder.id)
-                dropdown.listItems.add(name, name in selected)
-        else:
-            project_folders_d[project.name] = (project.id, None)
-            dropdown.listItems.add(project.name, project.name in selected)
+browser = None   # FolderBrowser of the dialog currently open
 
-    projects_loaded = True
+
+class FolderBrowser:
+    """The Project and Folder dropdowns: pick a project, then walk down (or up) the folders.
+
+    The project list is only fetched the first time it is needed, which is the slow part of
+    opening the dialog; 'Download Open Folder' ON never touches it."""
+
+    def __init__(self, inputs):
+        self.inputs = inputs
+        self.app = adsk.core.Application.get()
+        self.projects = []
+        self.project = None
+        self.folder = None
+        self.subfolders = []
+        self.updating = False
+
+    # --- projects
+    def load_projects(self, project_id=None):
+        if self.projects:
+            return
+        self.projects = list(self.app.data.dataProjects)
+        drop = self.inputs.itemById(I.project)
+        self.updating = True
+        try:
+            drop.listItems.clear()
+            chosen = None
+            for project in self.projects:
+                is_last = project.id == project_id
+                drop.listItems.add(project.name, is_last)
+                if is_last:
+                    chosen = project
+            if chosen is None and self.projects:
+                chosen = self.projects[0]
+                drop.listItems.item(0).isSelected = True
+            if not self.projects:
+                drop.listItems.add(NO_PROJECTS, True)
+        finally:
+            self.updating = False
+        self.project = chosen
+
+    def restore(self, project_id, folder_ids):
+        """Reopen the folder of the previous run (as far as it still exists)."""
+        self.load_projects(project_id)
+        if self.project is None:
+            self.inputs.itemById(I.target).text = NO_PROJECTS
+            return
+        folder = self.project.rootFolder
+        for folder_id in folder_ids or []:
+            nxt = find_subfolder(folder, folder_id)
+            if nxt is None:
+                break
+            folder = nxt
+        self.enter(folder)
+
+    def project_changed(self):
+        if self.updating:
+            return
+        name = selected_name(self.inputs.itemById(I.project))
+        for project in self.projects:
+            if project.name == name:
+                self.project = project
+                self.enter(project.rootFolder)
+                return
+
+    # --- folders
+    def enter(self, folder):
+        self.folder = folder
+        self.subfolders = list(folder.dataFolders)
+        drop = self.inputs.itemById(I.folder)
+        self.updating = True
+        try:
+            drop.listItems.clear()
+            drop.listItems.add(HERE, True)
+            if folder.parentFolder is not None:
+                drop.listItems.add(UP, False)
+            for sub in self.subfolders:
+                drop.listItems.add(sub.name, False)
+        finally:
+            self.updating = False
+        self.inputs.itemById(I.target).text = describe_folder(folder)
+
+    def folder_changed(self):
+        if self.updating or self.folder is None:
+            return
+        index = selected_index(self.inputs.itemById(I.folder))
+        has_up = self.folder.parentFolder is not None
+        if index <= 0:
+            return
+        if has_up and index == 1:
+            self.enter(self.folder.parentFolder)
+            return
+        sub = index - (2 if has_up else 1)
+        if 0 <= sub < len(self.subfolders):
+            self.enter(self.subfolders[sub])
+
+    def folder_ids(self):
+        """Ids from the project root (excluded) down to the current folder."""
+        ids = []
+        df = self.folder
+        while df is not None and df.parentFolder is not None:
+            ids.append(df.id)
+            df = df.parentFolder
+        ids.reverse()
+        return ids
+
+
+def find_subfolder(folder, folder_id):
+    for sub in folder.dataFolders:
+        if sub.id == folder_id:
+            return sub
+    return None
+
+
+def resolve_folder(app, project_id, folder_ids):
+    """The DataFolder a previous choice points at: project root, then down the id path."""
+    project = app.data.dataProjects.itemById(project_id)
+    if project is None:
+        raise Exception(f'Project {project_id} was not found; choose it again in the dialog')
+    folder = project.rootFolder
+    for folder_id in folder_ids:
+        nxt = find_subfolder(folder, folder_id)
+        if nxt is None:
+            raise Exception(f'Folder {folder_id} was not found under `{folder.name}`; choose it again in the dialog')
+        folder = nxt
+    return folder
+
+
+def selected_name(dropdown):
+    for item in dropdown.listItems:
+        if item.isSelected:
+            return item.name
+    return None
+
+
+def selected_index(dropdown):
+    index = 0
+    for item in dropdown.listItems:
+        if item.isSelected:
+            return index
+        index += 1
+    return -1
+
+
+def selected(list_items):
+    # no generators and no copies of list items: swig wants to own them
+    return [it.name for it in list_items if it.isSelected]
+
+
+def set_source_enabled(inputs, use_active):
+    inputs.itemById(I.project).isEnabled = not use_active
+    inputs.itemById(I.folder).isEnabled = not use_active
 
 
 class InputChangedHandler(adsk.core.InputChangedEventHandler):
@@ -893,25 +1021,42 @@ class InputChangedHandler(adsk.core.InputChangedEventHandler):
             changed = args.input
             if changed.id == I.all_versions:
                 inputs.itemById(I.version_count).isEnabled = not changed.value
+            elif changed.id == I.browse:
+                if changed.value:
+                    changed.value = False
+                    pick_output_directory(inputs)
             elif changed.id == I.use_active_folder:
                 use_active = changed.value
-                inputs.itemById(I.projects).isEnabled = not use_active
-                inputs.itemById(I.show_folders).isEnabled = not use_active
-                inputs.itemById(I.target).text = (active_folder_text(adsk.core.Application.get()) if use_active
-                                                  else 'Export Projects で選んだプロジェクト')
-                if not use_active and not projects_loaded:
-                    populate_data_projects_list(inputs.itemById(I.projects),
-                                                inputs.itemById(I.show_folders).value,
-                                                last_selected_projects)
-            elif changed.id == I.show_folders:
-                populate_data_projects_list(inputs.itemById(I.projects), changed.value, last_selected_projects)
+                set_source_enabled(inputs, use_active)
+                if use_active:
+                    inputs.itemById(I.target).text = active_folder_text(adsk.core.Application.get())
+                elif browser.folder is None:
+                    last = load_last_settings()
+                    browser.restore(last.get(I.project_id), last.get(I.folder_ids))
+                else:
+                    inputs.itemById(I.target).text = describe_folder(browser.folder)
+            elif changed.id == I.project:
+                browser.project_changed()
+            elif changed.id == I.folder:
+                browser.folder_changed()
         except Exception:
             message_box_traceback()
 
 
+def pick_output_directory(inputs):
+    ui = adsk.core.Application.get().userInterface
+    dialog = ui.createFolderDialog()
+    dialog.title = '出力先フォルダ'
+    current = inputs.itemById(I.directory).value
+    if current and Path(current).is_dir():
+        dialog.initialDirectory = current
+    if dialog.showDialog() == adsk.core.DialogResults.DialogOK:
+        inputs.itemById(I.directory).value = dialog.folder
+
+
 class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
     def notify(self, args):
-        global projects_loaded, last_selected_projects
+        global browser
         try:
             cmd = args.command
             cmd.isExecutedWhenPreEmpted = False
@@ -926,11 +1071,11 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
             inputs = cmd.commandInputs
             last = load_last_settings()
-            projects_loaded = False
-            last_selected_projects = last.get(I.projects)
+            app = adsk.core.Application.get()
 
             export_folder = last.get(I.directory, str(Path.home() / 'Desktop' / 'Fusion360Export'))
             inputs.addStringValueInput(I.directory, 'Directory', export_folder)
+            inputs.addBoolValueInput(I.browse, 'Browse…', False, '', False)
 
             drop = inputs.addDropDownCommandInput(I.file_types, 'Export Types',
                                                   adsk.core.DropDownStyles.CheckBoxDropDownStyle)
@@ -941,22 +1086,19 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             use_active_folder = last.get(I.use_active_folder, True)
             inputs.addBoolValueInput(I.use_active_folder, 'Download Open Folder', True, '', use_active_folder)
 
-            target = (active_folder_text(adsk.core.Application.get()) if use_active_folder
-                      else 'Export Projects で選んだプロジェクト')
-            inputs.addTextBoxCommandInput(I.target, 'Target', target, 2, True)
+            inputs.addDropDownCommandInput(I.project, 'Project', adsk.core.DropDownStyles.TextListDropDownStyle)
+            inputs.addDropDownCommandInput(I.folder, 'Folder', adsk.core.DropDownStyles.TextListDropDownStyle)
+            inputs.addTextBoxCommandInput(I.target, 'Target', '', 2, True)
+
+            browser = FolderBrowser(inputs)
+            set_source_enabled(inputs, use_active_folder)
+            if use_active_folder:
+                inputs.itemById(I.target).text = active_folder_text(app)
+            else:
+                browser.restore(last.get(I.project_id), last.get(I.folder_ids))
 
             inputs.addBoolValueInput(I.include_subfolders, 'Include Subfolders', True, '',
                                      last.get(I.include_subfolders, True))
-
-            show_folders = last.get(I.show_folders, False)
-            inputs.addBoolValueInput(I.show_folders, 'Show Project Folders', True, '', show_folders)
-            inputs.itemById(I.show_folders).isEnabled = not use_active_folder
-
-            drop = inputs.addDropDownCommandInput(I.projects, 'Export Projects',
-                                                  adsk.core.DropDownStyles.CheckBoxDropDownStyle)
-            if not use_active_folder:
-                populate_data_projects_list(drop, show_folders=show_folders, selected=last_selected_projects)
-            drop.isEnabled = not use_active_folder
 
             inputs.addBoolValueInput(I.open_hidden, 'Open Documents Hidden (faster)', True, '',
                                      last.get(I.open_hidden, True))
@@ -981,39 +1123,32 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             message_box_traceback()
 
 
-def selected(list_items):
-    # no generators and no copies of list items: swig wants to own them
-    return [it.name for it in list_items if it.isSelected]
-
-
-def make_projects_folders(inputs):
-    ret = defaultdict(set)
-    for it in inputs.itemById(I.projects).listItems:
-        if it.isSelected:
-            project_id, folder_id = project_folders_d[it.name]
-            if folder_id is None:
-                ret[project_id] = []
-            else:
-                ret[project_id].add(folder_id)
-    return ret
-
-
 class ExecuteHandler(adsk.core.CommandEventHandler):
     def notify(self, args):
         global VERSION_SEPARATOR
         try:
             inputs = args.command.commandInputs
+            ui = adsk.core.Application.get().userInterface
             iv = lambda name: inputs.itemById(name).value
             isel = lambda name: selected(inputs.itemById(name).listItems)
 
+            use_active = iv(I.use_active_folder)
+            if not use_active and (browser is None or browser.folder is None):
+                ui.messageBox('Project / Folder で書き出すフォルダを選んでください。')
+                return
+            project_id = '' if use_active else browser.project.id
+            folder_ids = [] if use_active else browser.folder_ids()
+
+            last = load_last_settings()
             save_last_settings({
                 I.directory: iv(I.directory),
                 I.file_types: isel(I.file_types),
-                I.use_active_folder: iv(I.use_active_folder),
-                I.show_folders: iv(I.show_folders),
-                I.projects: isel(I.projects) if projects_loaded else (last_selected_projects or []),
-                I.open_hidden: iv(I.open_hidden),
+                I.use_active_folder: use_active,
+                I.project_id: project_id or last.get(I.project_id),
+                I.folder_ids: folder_ids if not use_active else last.get(I.folder_ids, []),
+                I.folder_path: describe_folder(browser.folder) if not use_active else last.get(I.folder_path, ''),
                 I.include_subfolders: iv(I.include_subfolders),
+                I.open_hidden: iv(I.open_hidden),
                 I.unhide_all: iv(I.unhide_all),
                 I.save_sketches: iv(I.save_sketches),
                 I.version_count: iv(I.version_count),
@@ -1028,8 +1163,9 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 app=adsk.core.Application.get(),
                 folder=Path(iv(I.directory)),
                 formats=[FormatFromName[x] for x in isel(I.file_types)],
-                use_active_folder=iv(I.use_active_folder),
-                projects_folders=make_projects_folders(inputs) if projects_loaded else {},
+                use_active_folder=use_active,
+                project_id=project_id,
+                folder_ids=folder_ids,
                 unhide_all=iv(I.unhide_all),
                 save_sketches=iv(I.save_sketches),
                 num_versions=-1 if iv(I.all_versions) else iv(I.version_count),
