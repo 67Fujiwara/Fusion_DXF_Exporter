@@ -7,6 +7,8 @@ Trimmed and reshaped from aconz2/Fusion360Exporter (public domain).  Differences
 * file.versions (one server round trip per file) is never touched unless old versions were asked for
 * documents can be opened hidden, which skips most of the UI work per file
 * a document is only opened when at least one requested output is still missing
+* DataFile properties are read once per file; the log and the summary say where the time went
+* a progress bar with Cancel
 
 Run it from UTILITIES > ADD-INS > Scripts and Add-Ins (Shift+S): pick DXFExporter, hit Run.
 """
@@ -20,6 +22,7 @@ import time
 import traceback
 import zipfile
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, StrEnum
@@ -39,6 +42,7 @@ VERSION_SEPARATOR = '_'
 
 log_file = None
 log_fh = None
+log_t0 = 0.0
 
 handlers = []   # keep every event handler alive for the lifetime of the script
 
@@ -53,7 +57,7 @@ last_settings_path = Path(__file__).parent / 'last_settings.json'
 def log(*args):
     if log_fh is None:
         return
-    print(*args, file=log_fh)
+    print(f'[{time.perf_counter() - log_t0:7.1f}s]', *args, file=log_fh)
     log_fh.flush()
 
 
@@ -64,7 +68,8 @@ def init_directory(name):
 
 
 def init_logging(directory):
-    global log_file, log_fh
+    global log_file, log_fh, log_t0
+    log_t0 = time.perf_counter()
     log_file = directory / '{:%Y_%m_%d_%H_%M}.txt'.format(datetime.now())
     log_fh = open(log_file, 'w', encoding='utf-8')
 
@@ -152,23 +157,44 @@ class Ctx(NamedTuple):
         return cls(**d)
 
 
+class FileInfo:
+    """The DataFile properties we use, read once: each read can be a round trip to the hub."""
+
+    def __init__(self, file: adsk.core.DataFile):
+        self.file = file
+        self.name = file.name
+        self.version = file.versionNumber
+        self.ext = file.fileExtension
+        self._mtime = None
+
+    @property
+    def date_modified(self):
+        if self._mtime is None:
+            self._mtime = self.file.dateModified
+        return self._mtime
+
+    @property
+    def label(self):
+        return f'`{self.name}` v{self.version}'
+
+
 class LazyDocument:
     """Opens the Fusion document on first use only, so files whose outputs all exist cost nothing."""
 
-    def __init__(self, ctx: Ctx, file: adsk.core.DataFile):
+    def __init__(self, ctx: Ctx, info: FileInfo):
         self._ctx = ctx
         self._document = None
-        self.file = file
+        self.info = info
         self.unhidden = False
 
     def open(self):
         if self._document is not None:
             return
         visible = not self._ctx.open_hidden
-        log(f'Opening `{self.file.name}` v{self.file.versionNumber}' + ('' if visible else ' (hidden)'))
-        self._document = self._ctx.app.documents.open(self.file, visible)
-        if visible:
-            self._document.activate()
+        log(f'Opening {self.info.label}' + ('' if visible else ' (hidden)'))
+        with timed('open'):
+            self._document = self._ctx.app.documents.open(self.info.file, visible)
+        log(f'Opened {self.info.label} in {timings.last:.1f} s')
 
     def unhide_all(self):
         if self.unhidden:
@@ -179,8 +205,9 @@ class LazyDocument:
     def close(self):
         if self._document is None:
             return
-        log(f'Closing `{self.file.name}` v{self.file.versionNumber}')
-        self._document.close(False)  # never save
+        with timed('close'):
+            self._document.close(False)  # never save
+        log(f'Closed {self.info.label} in {timings.last:.1f} s')
 
     @property
     def design(self):
@@ -206,15 +233,39 @@ class Counter:
     saved: int = 0
     skipped: int = 0
     errored: int = 0
+    cancelled: bool = False
 
     def __add__(self, other):
-        return Counter(self.saved + other.saved, self.skipped + other.skipped, self.errored + other.errored)
+        return Counter(self.saved + other.saved, self.skipped + other.skipped, self.errored + other.errored,
+                       self.cancelled or other.cancelled)
 
     def __iadd__(self, other):
         self.saved += other.saved
         self.skipped += other.skipped
         self.errored += other.errored
+        self.cancelled = self.cancelled or other.cancelled
         return self
+
+
+class Timings(defaultdict):
+    """Seconds spent per phase ('listing', 'open', 'export', 'close'); .last is the latest block."""
+
+    def __init__(self):
+        super().__init__(float)
+        self.last = 0.0
+
+
+timings = Timings()
+
+
+@contextmanager
+def timed(key):
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings.last = time.perf_counter() - started
+        timings[key] += timings.last
 
 
 def unhide_all_in_component(component):
@@ -243,10 +294,10 @@ def set_mtime(path: Path, time_: int):
     os.utime(path, (time_, time_))
 
 
-def output_path_exists(path: Path, file: adsk.core.DataFile) -> bool:
+def output_path_exists(path: Path, info: FileInfo) -> bool:
     if path.exists():
         if update_existing_file_times:
-            set_mtime(path, file.dateModified)
+            set_mtime(path, info.date_modified)
             log(f'{path} already exists, but mtime was corrected')
         else:
             log(f'{path} already exists, skipping')
@@ -260,12 +311,13 @@ def output_path_exists(path: Path, file: adsk.core.DataFile) -> bool:
 
 def export_sketch(ctx: Ctx, doc: LazyDocument, component, sketch) -> Counter:
     output_path = ctx.folder / f'{sanitize_filename(sketch.name)}.dxf'
-    if output_path_exists(output_path, doc.file):
+    if output_path_exists(output_path, doc.info):
         return Counter(skipped=1)
     log(f'Exporting sketch {sketch.name} in {component.name} to {output_path}')
     output_path.parent.mkdir(exist_ok=True, parents=True)
-    sketch.saveAsDXF(str(output_path))
-    set_mtime(output_path, doc.file.dateModified)
+    with timed('export'):
+        sketch.saveAsDXF(str(output_path))
+    set_mtime(output_path, doc.info.date_modified)
     return Counter(saved=1)
 
 
@@ -293,16 +345,16 @@ def tree_gen(folder) -> Path:
     return Path(*names) if names else Path()
 
 
-def export_filename(ctx: Ctx, file: adsk.core.DataFile, format: Format = None) -> Path:
-    extension = file.fileExtension if format is None else format.value
-    name = f'{sanitize_filename(file.name)}{VERSION_SEPARATOR}v{file.versionNumber}.{extension}'
+def export_filename(ctx: Ctx, info: FileInfo, format: Format = None) -> Path:
+    extension = info.ext if format is None else format.value
+    name = f'{sanitize_filename(info.name)}{VERSION_SEPARATOR}v{info.version}.{extension}'
     return ctx.folder / name
 
 
 def export_file(ctx: Ctx, format: Format, doc: LazyDocument) -> Counter:
     """One f3d design -> one file of `format`."""
-    output_path = export_filename(ctx, doc.file, format)
-    if output_path_exists(output_path, doc.file):
+    output_path = export_filename(ctx, doc.info, format)
+    if output_path_exists(output_path, doc.info):
         return Counter(skipped=1)
 
     doc.open()
@@ -333,9 +385,10 @@ def export_file(ctx: Ctx, format: Format, doc: LazyDocument) -> Counter:
     if ctx.unhide_all and format != Format.F3D:
         doc.unhide_all()
 
-    em.execute(options)
-    set_mtime(output_path, doc.file.dateModified)
-    log(f'Saved {output_path}')
+    with timed('export'):
+        em.execute(options)
+    set_mtime(output_path, doc.info.date_modified)
+    log(f'Saved {output_path} in {timings.last:.1f} s')
 
     if format == Format.F3D:
         thumb_b64 = design.rootComponent.createThumbnail(256, 256, 'PNG').getAsBase64String()
@@ -348,8 +401,8 @@ def export_file(ctx: Ctx, format: Format, doc: LazyDocument) -> Counter:
 
 def export_drawing(ctx: Ctx, format: Format, doc: LazyDocument) -> Counter:
     """One f2d drawing -> PDF / DXF / DWG."""
-    output_path = export_filename(ctx, doc.file, format)
-    if output_path_exists(output_path, doc.file):
+    output_path = export_filename(ctx, doc.info, format)
+    if output_path_exists(output_path, doc.info):
         return Counter(skipped=1)
 
     doc.open()
@@ -365,36 +418,40 @@ def export_drawing(ctx: Ctx, format: Format, doc: LazyDocument) -> Counter:
         )
 
     output_path.parent.mkdir(exist_ok=True, parents=True)
-    em.execute(create(str(output_path)))
-    set_mtime(output_path, doc.file.dateModified)
-    log(f'Saved {output_path}')
+    with timed('export'):
+        em.execute(create(str(output_path)))
+    set_mtime(output_path, doc.info.date_modified)
+    log(f'Saved {output_path} in {timings.last:.1f} s')
     return Counter(saved=1)
 
 
-def download_file(ctx: Ctx, file: adsk.core.DataFile) -> Counter:
+def download_file(ctx: Ctx, info: FileInfo) -> Counter:
     """Non-design files (pdf, xlsx, ...) are downloaded as they are, latest version only."""
-    output_path = export_filename(ctx, file)
-    if output_path_exists(output_path, file):
+    output_path = export_filename(ctx, info)
+    if output_path_exists(output_path, info):
         return Counter(skipped=1)
     output_path.parent.mkdir(exist_ok=True, parents=True)
-    file.download(str(output_path), None)
-    set_mtime(output_path, file.dateModified)
-    log(f'Saved {output_path}')
+    with timed('export'):
+        info.file.download(str(output_path), None)
+    set_mtime(output_path, info.date_modified)
+    log(f'Saved {output_path} in {timings.last:.1f} s')
     return Counter(saved=1)
 
 
 def visit_file(ctx: Ctx, file: adsk.core.DataFile) -> Counter:
-    log(f'Visiting file {file.name} v{file.versionNumber}.{file.fileExtension}')
+    with timed('listing'):
+        info = FileInfo(file)
+    log(f'Visiting file {info.name} v{info.version}.{info.ext}')
     counter = Counter()
-    ext = file.fileExtension
+    ext = info.ext
 
     if ext not in ('f3d', 'f2d'):
         if not ctx.export_non_design_files:
-            log(f'Skipping non-design file {file.name}.{ext}')
+            log(f'Skipping non-design file {info.name}.{ext}')
             counter.skipped += 1
             return counter
         try:
-            counter += download_file(ctx, file)
+            counter += download_file(ctx, info)
         except Exception:
             counter.errored += 1
             log(traceback.format_exc())
@@ -407,7 +464,7 @@ def visit_file(ctx: Ctx, file: adsk.core.DataFile) -> Counter:
         counter.skipped += 1
         return counter
 
-    with LazyDocument(ctx, file) as doc:
+    with LazyDocument(ctx, info) as doc:
         if ext == 'f3d' and ctx.save_sketches:
             doc.open()
             counter += visit_sketches(ctx.extend(sanitize_filename(doc.rootComponent.name)), doc, doc.rootComponent)
@@ -433,13 +490,15 @@ def file_versions(file: adsk.core.DataFile, num_versions):
     if num_versions == 0:
         return
 
-    versions = sorted(file.versions, key=lambda x: x.versionNumber, reverse=True)
-    if versions[0].versionNumber != file.versionNumber:
+    with timed('listing'):
+        versions = sorted(file.versions, key=lambda x: x.versionNumber, reverse=True)
+        current = file.versionNumber
+    if versions[0].versionNumber != current:
         raise Exception(f'Expected versions[0] to be current file version, but got {versions[0].versionNumber}')
 
     versions = versions[1:] if num_versions == -1 else versions[1:num_versions + 1]
 
-    prev = file.versionNumber
+    prev = current
     for v in versions:
         if prev - v.versionNumber != 1:
             raise Exception(f'Versions not contiguous! prev={prev} cur={v.versionNumber}')
@@ -447,68 +506,120 @@ def file_versions(file: adsk.core.DataFile, num_versions):
         prev = v.versionNumber
 
 
-def visit_folder(ctx: Ctx, folder, recurse=True) -> Counter:
-    log(f'Visiting folder {folder.name}')
+def collect_files(ctx: Ctx, folder, recurse=True, out=None):
+    """List (ctx, DataFile) for everything under `folder` before opening anything,
+    so the progress dialog knows the total up front."""
+    if out is None:
+        out = []
+    log(f'Listing folder {folder.name}')
     new_ctx = ctx.extend(sanitize_filename(folder.name))
-    counter = Counter()
+    with timed('listing'):
+        files = list(folder.dataFiles)
+        sub_folders = list(folder.dataFolders) if recurse else []
+    out.extend((new_ctx, f) for f in files)
+    for sub_folder in sub_folders:
+        collect_files(new_ctx, sub_folder, True, out)
+    return out
 
-    for file in folder.dataFiles:
+
+def process_files(ctx: Ctx, items, progress=None) -> Counter:
+    """Export every (ctx, DataFile) in `items`.  `progress(index, total, file)` returning True cancels."""
+    counter = Counter()
+    total = len(items)
+    for index, (file_ctx, file) in enumerate(items):
+        if progress is not None and progress(index, total, file):
+            log('Cancelled by user')
+            counter.cancelled = True
+            break
         try:
             for file_version in file_versions(file, ctx.num_versions):
-                counter += visit_file(new_ctx, file_version)
+                counter += visit_file(file_ctx, file_version)
         except Exception:
             log(f'Got exception visiting file\n{traceback.format_exc()}')
             counter.errored += 1
-
-    if recurse:
-        for sub_folder in folder.dataFolders:
-            counter += visit_folder(new_ctx, sub_folder)
-
     return counter
 
 
-def main(ctx: Ctx) -> Counter:
+def visit_folder(ctx: Ctx, folder, recurse=True, progress=None) -> Counter:
+    return process_files(ctx, collect_files(ctx, folder, recurse), progress)
+
+
+def main(ctx: Ctx, progress=None) -> Counter:
     init_directory(ctx.folder)
     init_logging(ctx.folder)
     log(ctx.dumps())
+    timings.clear()
 
-    counter = Counter()
-
+    items = []
     if ctx.use_active_folder:
-        root_folder = ctx.app.data.activeFolder
-        counter += visit_folder(ctx.extend(tree_gen(root_folder)), root_folder)
+        with timed('listing'):
+            root_folder = ctx.app.data.activeFolder
+            root_ctx = ctx.extend(tree_gen(root_folder))
+        collect_files(root_ctx, root_folder, True, items)
     else:
         for project_id, folder_ids in ctx.projects_folders.items():
-            project = ctx.app.data.dataProjects.itemById(project_id)
+            with timed('listing'):
+                project = ctx.app.data.dataProjects.itemById(project_id)
+                root = project.rootFolder
             if not folder_ids:
-                counter += visit_folder(ctx, project.rootFolder)
-            elif set(folder_ids) == {project.rootFolder.id}:
-                counter += visit_folder(ctx, project.rootFolder, recurse=False)
+                collect_files(ctx, root, True, items)
+            elif set(folder_ids) == {root.id}:
+                collect_files(ctx, root, False, items)
             else:
-                for folder in project.rootFolder.dataFolders:
-                    if folder.id in folder_ids:
-                        counter += visit_folder(ctx, folder)
+                with timed('listing'):
+                    chosen = [f for f in root.dataFolders if f.id in folder_ids]
+                for folder in chosen:
+                    collect_files(ctx, folder, True, items)
 
-    return counter
+    log(f'{len(items)} files to visit')
+    return process_files(ctx, items, progress)
+
+
+class ProgressDialog:
+    """Fusion progress bar with a Cancel button; returns True from __call__ when cancelled."""
+
+    def __init__(self, ui):
+        self._pd = ui.createProgressDialog()
+        self._pd.isCancelButtonShown = True
+        self._shown = False
+
+    def __call__(self, index, total, file):
+        if not self._shown:
+            self._pd.show('DXF Exporter', '%v / %m', 0, max(total, 1))
+            self._shown = True
+        if self._pd.wasCancelled:
+            return True
+        self._pd.progressValue = index
+        self._pd.message = f'{file.name}  (%v / %m)'
+        return False
+
+    def hide(self):
+        if self._shown:
+            self._pd.hide()
 
 
 def run_main(ctx: Ctx):
     global log_fh
     ui = ctx.app.userInterface
     started = time.perf_counter()
+    progress = ProgressDialog(ui)
     try:
-        counter = main(ctx)
+        counter = main(ctx, progress)
+        progress.hide()
         elapsed = time.perf_counter() - started
         summary = '\n'.join((
-            f'Saved {counter.saved} files',
+            ('Cancelled.  ' if counter.cancelled else '') + f'Saved {counter.saved} files',
             f'Skipped {counter.skipped} files',
             f'Encountered {counter.errored} errors',
-            f'Took {elapsed:.1f} s',
+            f'Took {elapsed:.1f} s:  listing {timings["listing"]:.1f} s, '
+            f'opening {timings["open"]:.1f} s, exporting {timings["export"]:.1f} s, '
+            f'closing {timings["close"]:.1f} s',
             f'Log file is at {log_file}',
         ))
         log(summary)
         ui.messageBox(summary)
     except Exception:
+        progress.hide()
         tb = traceback.format_exc()
         ui.messageBox(f'Log file is at {log_file}\n{tb}')
         log(f'Got top level exception\n{tb}')

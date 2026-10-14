@@ -157,6 +157,33 @@ class ExportLoop(unittest.TestCase):
         self.assertEqual(core.sanitize_filename('plain'), 'plain')
         self.assertRegex(core.sanitize_filename('a/b'), r'^a b_[0-9a-f]{8}$')
 
+    def test_cancel_stops_before_next_file(self):
+        ctx = make_ctx([core.Format.DXF])
+        files = [FakeFile('a', 'f2d'), FakeFile('b', 'f2d'), FakeFile('c', 'f2d')]
+        cancel_after = 1
+        c = core.visit_folder(ctx, FakeFolder('proj', files), progress=lambda i, n, f: i >= cancel_after)
+        self.assertTrue(c.cancelled)
+        self.assertEqual(c.saved, 1)
+        self.assertEqual([f.name for f, _ in ctx.app.documents.opened], ['a'])
+
+    def test_datafile_properties_read_once_per_file(self):
+        class CountingFile(FakeFile):
+            reads = 0
+
+            @property
+            def versionNumber(self):
+                CountingFile.reads += 1
+                return 7
+
+            @versionNumber.setter
+            def versionNumber(self, value):
+                pass
+
+        ctx = make_ctx([core.Format.DXF, core.Format.PDF])
+        core.visit_folder(ctx, FakeFolder('proj', [CountingFile('plate', 'f2d')]))
+        self.assertEqual(CountingFile.reads, 1)
+        self.assertEqual(self.drawing_em.created[0][1], str(Path('/out/proj/plate_v7.pdf')))
+
     def test_tree_gen_builds_relative_path(self):
         a = SimpleNamespace(name='A', parentFolder=None)
         b = SimpleNamespace(name='B', parentFolder=a)
