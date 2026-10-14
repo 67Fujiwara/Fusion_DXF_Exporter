@@ -705,14 +705,28 @@ class StatusPalette:
         self.index = 0
         self.total = 0
         self._last = {'phase': 'listing'}
-        self._send(self._last)
+        self._ready = False                  # set when status.html says 'ready'
+        self._created = time.perf_counter()
+        pump_events()
+
+    READY_TIMEOUT = 15.0   # seconds to wait for status.html before giving up on the panel
 
     def _send(self, data):
+        """Fusion raises 'Cannot send information to native palette' when the panel is hidden
+        or its page has not loaded yet, so: wait for 'ready', and re-show a closed panel."""
         self._last = data
+        if not self._ready:
+            if time.perf_counter() - self._created > self.READY_TIMEOUT:
+                raise RuntimeError('status panel never reported ready')
+            pump_events()
+            return
+        if not self._palette.isVisible:
+            self._palette.isVisible = True
         self._palette.sendInfoToHTML('status', json.dumps(data, ensure_ascii=False))
         pump_events()
 
     def resend(self):
+        self._ready = True
         self._palette.sendInfoToHTML('status', json.dumps(self._last, ensure_ascii=False))
 
     def __call__(self, index, total, file):
