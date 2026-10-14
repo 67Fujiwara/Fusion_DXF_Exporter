@@ -151,10 +151,11 @@ class ExportLoop(unittest.TestCase):
         self.assertEqual(c.saved, 2)
         self.assertEqual([f.versionNumber for f, _ in ctx.app.documents.opened], [3, 2])
 
-    def test_hidden_open_passes_visible_false_and_skips_activate(self):
-        ctx = make_ctx([core.Format.DXF], open_hidden=True)
-        core.visit_folder(ctx, FakeFolder('proj', [FakeFile('plate', 'f2d')]))
-        self.assertEqual(ctx.app.documents.opened[0][1], False)
+    def test_hidden_open_applies_to_models_only(self):
+        ctx = make_ctx([core.Format.DXF, core.Format.STEP], open_hidden=True)
+        core.visit_folder(ctx, FakeFolder('proj', [FakeFile('plate', 'f2d'), FakeFile('plate', 'f3d')]))
+        visible = {f.fileExtension: v for f, v in ctx.app.documents.opened}
+        self.assertEqual(visible, {'f2d': True, 'f3d': False})
 
     def test_filename_sanitized_with_hash(self):
         self.assertEqual(core.sanitize_filename('plain'), 'plain')
@@ -231,10 +232,11 @@ class ExportLoop(unittest.TestCase):
         self.assertEqual(without, ['outer'])
 
     def test_describe_folder_reads_like_the_breadcrumb(self):
-        project = SimpleNamespace(name='ウリセス')
-        a = SimpleNamespace(name='予備枠', parentFolder=None, parentProject=project)
+        project = SimpleNamespace(name='予備枠')
+        root = SimpleNamespace(name='予備枠', parentFolder=None, parentProject=project)   # root = project name
+        a = SimpleNamespace(name='ウリセス', parentFolder=root, parentProject=project)
         b = SimpleNamespace(name='DXF+STEP+PDF', parentFolder=a, parentProject=project)
-        self.assertEqual(core.describe_folder(b), 'ウリセス / 予備枠 / DXF+STEP+PDF')
+        self.assertEqual(core.describe_folder(b), '予備枠 / ウリセス / DXF+STEP+PDF')
 
     def test_resolve_folder_walks_the_saved_id_path(self):
         leaf = FakeFolder('DXF+STEP+PDF', [], id='f3')

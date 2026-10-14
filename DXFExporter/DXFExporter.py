@@ -61,9 +61,7 @@ def log(*args):
 
 
 # ----------------------------------------------------------------------------- status
-# What the script is doing right now, for the on-screen panel and for the heartbeat
-# thread that writes "still opening X, 45 s so far" into the log while the main
-# thread is stuck inside a Fusion call.
+# What the script is doing right now, for the on-screen panel.
 
 status_hook = None            # callable(phase, label) set by run_main
 current_step = ('', '', 0.0)  # (phase, label, started_at)
@@ -77,123 +75,6 @@ def set_status(phase: str, label: str = ''):
             status_hook(phase, label)
         except Exception:
             log(f'status hook failed\n{traceback.format_exc()}')
-
-
-class Heartbeat(threading.Thread):
-    """Every 15 s, note in the log how long the current step has been running."""
-
-    def __init__(self, interval=15.0):
-        super().__init__(daemon=True)
-        self._stop = threading.Event()
-        self._interval = interval
-
-    def run(self):
-        while not self._stop.wait(self._interval):
-            phase, label, started = current_step
-            if phase:
-                log(f'... still {phase} {label}, {time.perf_counter() - started:.0f} s so far')
-
-    def stop(self):
-        self._stop.set()
-
-
-def init_directory(name):
-    directory = Path(name)
-    directory.mkdir(exist_ok=True, parents=True)
-    return directory
-
-
-def init_logging(directory):
-    global log_file, log_fh, log_t0
-    log_t0 = time.perf_counter()
-    log_file = directory / '{:%Y_%m_%d_%H_%M}.txt'.format(datetime.now())
-    log_fh = open(log_file, 'w', encoding='utf-8')
-
-
-def load_last_settings():
-    if not last_settings_path.exists():
-        return {}
-    try:
-        with open(last_settings_path, encoding='utf-8') as fh:
-            return json.load(fh)
-    except Exception:
-        return {}
-
-
-def save_last_settings(d):
-    with open(last_settings_path, 'w', encoding='utf-8') as fh:
-        json.dump(d, fh, indent=2, ensure_ascii=False)
-
-
-# f3d first: it is exported before anything gets unhidden so its thumbnail stays as designed
-class Format(Enum):
-    F3D = 'f3d'
-    STEP = 'step'
-    STL = 'stl'
-    IGES = 'igs'
-    SAT = 'sat'
-    SMT = 'smt'
-    TMF = '3mf'
-    PDF = 'pdf'
-    DXF = 'dxf'
-    DWG = 'dwg'
-
-
-FormatFromName = {x.value: x for x in Format}
-
-DESIGN_FORMATS = (Format.F3D, Format.STEP, Format.STL, Format.IGES, Format.SAT, Format.SMT, Format.TMF)
-DRAWING_FORMATS = (Format.PDF, Format.DXF, Format.DWG)
-
-# name of the DrawingExportManager factory for each drawing format
-DRAWING_EXPORT_METHODS = {
-    Format.PDF: 'createPDFExportOptions',
-    Format.DXF: 'createDXFExportOptions',
-    Format.DWG: 'createDWGExportOptions',
-}
-
-DEFAULT_SELECTED_FORMATS = {Format.DXF.value}
-
-archive_extensions = ['.zip', '.rar', '.gz', '.tar.gz', '.tar.bz2', '.tar.xz']
-
-
-class Ctx(NamedTuple):
-    app: adsk.core.Application
-    folder: Path
-    formats: List[Format]
-    use_active_folder: bool                 # True: the Data Panel's open folder; False: project_id/folder_ids
-    project_id: str
-    folder_ids: List[str]                   # folder ids from the project root (excluded) down to the target
-    unhide_all: bool
-    save_sketches: bool
-    num_versions: int                       # -1 means all versions
-    export_non_design_files: bool
-    open_hidden: bool                       # open documents without showing them (faster)
-    include_subfolders: bool                # also walk the sub-folders of the chosen folder(s)
-
-    def extend(self, other):
-        return self._replace(folder=self.folder / other)
-
-    def to_dict(self):
-        d = self._asdict()
-        d.pop('app')
-        d['folder'] = str(d['folder'])
-        d['formats'] = [x.value for x in d['formats']]
-        return d
-
-    def dumps(self):
-        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
-
-    @classmethod
-    def from_dict(cls, d, app):
-        d = dict(d)
-        d['app'] = app
-        d['folder'] = Path(d['folder'])
-        d['formats'] = [FormatFromName[x] for x in d['formats']]
-        d.setdefault('project_id', '')
-        d.setdefault('folder_ids', [])
-        d.setdefault('open_hidden', True)
-        d.setdefault('include_subfolders', True)
-        return cls(**d)
 
 
 class FileInfo:
@@ -233,7 +114,9 @@ class LazyDocument:
     def open(self):
         if self._document is not None:
             return
-        visible = not self._ctx.open_hidden
+        # Hidden open is only safe for designs.  A drawing opened hidden waits on something
+        # that needs the UI, hits Fusion's 10-minute timeout and then crashes Fusion.
+        visible = not (self._ctx.open_hidden and self.info.ext == 'f3d')
         log(f'Opening {self.info.label}' + ('' if visible else ' (hidden)'))
         set_status('opening', self.info.title)
         with timed('open'):
@@ -403,6 +286,8 @@ def describe_folder(folder) -> str:
         project = folder.parentProject.name
     except Exception:
         project = None
+    if project and names and names[0] == project:
+        names = names[1:]
     return ' / '.join(([project] if project else []) + names)
 
 
@@ -855,8 +740,6 @@ def run_main(ctx: Ctx):
     init_logging(ctx.folder)
     progress = make_progress(ui)
     status_hook = progress.status
-    heartbeat = Heartbeat()
-    heartbeat.start()
     try:
         counter = main(ctx, progress)
         elapsed = time.perf_counter() - started
@@ -878,7 +761,6 @@ def run_main(ctx: Ctx):
         ui.messageBox(f'Log file is at {log_file}\n{tb}')
         log(f'Got top level exception\n{tb}')
     finally:
-        heartbeat.stop()
         status_hook = None
         progress.hide()
         if log_fh is not None:
@@ -1161,7 +1043,7 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             inputs.addBoolValueInput(I.include_subfolders, 'Include Subfolders', True, '',
                                      last.get(I.include_subfolders, True))
 
-            inputs.addBoolValueInput(I.open_hidden, 'Open Documents Hidden (faster)', True, '',
+            inputs.addBoolValueInput(I.open_hidden, 'Open Models Hidden (f3d only, faster)', True, '',
                                      last.get(I.open_hidden, True))
 
             inputs.addBoolValueInput(I.unhide_all, 'Unhide All Bodies', True, '', last.get(I.unhide_all, True))
