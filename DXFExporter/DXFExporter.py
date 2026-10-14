@@ -527,6 +527,10 @@ def process_files(ctx: Ctx, items, progress=None) -> Counter:
     counter = Counter()
     total = len(items)
     for index, (file_ctx, file) in enumerate(items):
+        # Let Fusion handle queued UI events between files: the Cancel button, and the
+        # window's close button.  Without this the loop owns the main thread and Fusion
+        # cannot quit until every file is done.
+        pump_events()
         if progress is not None and progress(index, total, file):
             log('Cancelled by user')
             counter.cancelled = True
@@ -537,7 +541,26 @@ def process_files(ctx: Ctx, items, progress=None) -> Counter:
         except Exception:
             log(f'Got exception visiting file\n{traceback.format_exc()}')
             counter.errored += 1
+        if application_gone():
+            log('Fusion is shutting down, stopping')
+            counter.cancelled = True
+            break
     return counter
+
+
+def pump_events():
+    try:
+        adsk.doEvents()
+    except Exception:
+        pass
+
+
+def application_gone() -> bool:
+    """True once Fusion has started to quit: the API objects stop answering."""
+    try:
+        return adsk.core.Application.get() is None
+    except Exception:
+        return True
 
 
 def visit_folder(ctx: Ctx, folder, recurse=True, progress=None) -> Counter:

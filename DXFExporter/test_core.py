@@ -18,6 +18,7 @@ for name in ('adsk', 'adsk.core', 'adsk.fusion', 'adsk.drawing'):
 import DXFExporter as core  # noqa: E402
 
 core.set_mtime = lambda path, t: None
+core.application_gone = lambda: False
 Path.mkdir = lambda *a, **k: None
 
 
@@ -183,6 +184,23 @@ class ExportLoop(unittest.TestCase):
         core.visit_folder(ctx, FakeFolder('proj', [CountingFile('plate', 'f2d')]))
         self.assertEqual(CountingFile.reads, 1)
         self.assertEqual(self.drawing_em.created[0][1], str(Path('/out/proj/plate_v7.pdf')))
+
+    def test_loop_stops_when_fusion_is_quitting(self):
+        ctx = make_ctx([core.Format.DXF])
+        files = [FakeFile('a', 'f2d'), FakeFile('b', 'f2d'), FakeFile('c', 'f2d')]
+        gone = {'now': False}
+        core.application_gone = lambda: gone['now']
+
+        def failing_open(file, visible=True):
+            gone['now'] = True
+            raise RuntimeError('Fusion closed')
+        ctx.app.documents.open = failing_open
+        try:
+            c = core.visit_folder(ctx, FakeFolder('proj', files))
+        finally:
+            core.application_gone = lambda: False
+        self.assertTrue(c.cancelled)
+        self.assertEqual(c.errored, 1)   # the second and third file were not even tried
 
     def test_tree_gen_builds_relative_path(self):
         a = SimpleNamespace(name='A', parentFolder=None)
