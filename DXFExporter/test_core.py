@@ -85,7 +85,7 @@ def make_ctx(formats, **kw):
     app = SimpleNamespace(documents=FakeDocuments())
     args = dict(app=app, folder=Path('/out'), formats=formats, use_active_folder=True, project_id='', folder_ids=[],
                 unhide_all=False, save_sketches=False, num_versions=0, export_non_design_files=False,
-                open_hidden=False, include_subfolders=True)
+                include_subfolders=True)
     args.update(kw)
     return core.Ctx(**args)
 
@@ -150,12 +150,6 @@ class ExportLoop(unittest.TestCase):
         c = core.visit_folder(ctx, FakeFolder('proj', [v3]))
         self.assertEqual(c.saved, 2)
         self.assertEqual([f.versionNumber for f, _ in ctx.app.documents.opened], [3, 2])
-
-    def test_hidden_open_applies_to_models_only(self):
-        ctx = make_ctx([core.Format.DXF, core.Format.STEP], open_hidden=True)
-        core.visit_folder(ctx, FakeFolder('proj', [FakeFile('plate', 'f2d'), FakeFile('plate', 'f3d')]))
-        visible = {f.fileExtension: v for f, v in ctx.app.documents.opened}
-        self.assertEqual(visible, {'f2d': True, 'f3d': False})
 
     def test_filename_sanitized_with_hash(self):
         self.assertEqual(core.sanitize_filename('plain'), 'plain')

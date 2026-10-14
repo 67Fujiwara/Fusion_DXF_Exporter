@@ -5,7 +5,6 @@ Trimmed and reshaped from aconz2/Fusion360Exporter (public domain).  Differences
 * f2d drawings export to PDF, DXF and DWG (DXF/DWG need the Sept 2026 Fusion API or newer)
 * the project list is only fetched when it is actually needed (dialog opens instantly)
 * file.versions (one server round trip per file) is never touched unless old versions were asked for
-* documents can be opened hidden, which skips most of the UI work per file
 * a document is only opened when at least one requested output is still missing
 * DataFile properties are read once per file; the log and the summary say where the time went
 * a progress bar with Cancel
@@ -147,7 +146,6 @@ class Ctx(NamedTuple):
     save_sketches: bool
     num_versions: int                       # -1 means all versions
     export_non_design_files: bool
-    open_hidden: bool                       # open documents without showing them (faster)
     include_subfolders: bool                # also walk the sub-folders of the chosen folder(s)
 
     def extend(self, other):
@@ -171,7 +169,7 @@ class Ctx(NamedTuple):
         d['formats'] = [FormatFromName[x] for x in d['formats']]
         d.setdefault('project_id', '')
         d.setdefault('folder_ids', [])
-        d.setdefault('open_hidden', True)
+        d.pop('open_hidden', None)   # setting of older versions
         d.setdefault('include_subfolders', True)
         return cls(**d)
 
@@ -213,13 +211,12 @@ class LazyDocument:
     def open(self):
         if self._document is not None:
             return
-        # Hidden open is only safe for designs.  A drawing opened hidden waits on something
-        # that needs the UI, hits Fusion's 10-minute timeout and then crashes Fusion.
-        visible = not (self._ctx.open_hidden and self.info.ext == 'f3d')
-        log(f'Opening {self.info.label}' + ('' if visible else ' (hidden)'))
+        # Always visible: opening a document hidden makes Fusion wait on UI work it cannot do,
+        # hit its 10-minute timeout and crash.
+        log(f'Opening {self.info.label}')
         set_status('opening', self.info.title)
         with timed('open'):
-            self._document = self._ctx.app.documents.open(self.info.file, visible)
+            self._document = self._ctx.app.documents.open(self.info.file, True)
         log(f'Opened {self.info.label} in {timings.last:.1f} s')
 
     def unhide_all(self):
@@ -889,7 +886,6 @@ class I(StrEnum):
     save_sketches = 'save_sketches'
     version_separator_is_space = 'version_separator_is_space'
     export_non_design_files = 'export_non_design_files'
-    open_hidden = 'open_hidden'
     # settings-only keys (what the folder browser had chosen)
     project_id = 'project_id'
     folder_ids = 'folder_ids'
@@ -1142,9 +1138,6 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             inputs.addBoolValueInput(I.include_subfolders, 'Include Subfolders', True, '',
                                      last.get(I.include_subfolders, True))
 
-            inputs.addBoolValueInput(I.open_hidden, 'Open Models Hidden (f3d only, faster)', True, '',
-                                     last.get(I.open_hidden, True))
-
             inputs.addBoolValueInput(I.unhide_all, 'Unhide All Bodies', True, '', last.get(I.unhide_all, True))
 
             versions_group = inputs.addGroupCommandInput('group_versions', 'Versions')
@@ -1190,7 +1183,6 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 I.folder_ids: folder_ids if not use_active else last.get(I.folder_ids, []),
                 I.folder_path: describe_folder(browser.folder) if not use_active else last.get(I.folder_path, ''),
                 I.include_subfolders: iv(I.include_subfolders),
-                I.open_hidden: iv(I.open_hidden),
                 I.unhide_all: iv(I.unhide_all),
                 I.save_sketches: iv(I.save_sketches),
                 I.version_count: iv(I.version_count),
@@ -1212,7 +1204,6 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 save_sketches=iv(I.save_sketches),
                 num_versions=-1 if iv(I.all_versions) else iv(I.version_count),
                 export_non_design_files=iv(I.export_non_design_files),
-                open_hidden=iv(I.open_hidden),
                 include_subfolders=iv(I.include_subfolders),
             )
             run_main(ctx)
