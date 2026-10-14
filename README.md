@@ -25,10 +25,26 @@ Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を
 「開いているフォルダ以下の f2d 図面を全部 DXF にする」がそのまま走ります。
 前回の設定は `last_settings.json`（`DXFExporter` フォルダに自動生成）に残り、次回の初期値になります。
 
-実行中は進捗バー（何件目か・キャンセル）が出ます。Fusion がドキュメントを次々に開くので、
-終わるまで PC は他の作業に使いにくいです。キャンセルすると今のファイルを終えてから止まります。
+実行中は Fusion の中に **進捗パネル**が出ます。今の段階（一覧を取得中 / 開いています / 書き出し中 / 閉じています）、
+ファイル名、何件目か、経過時間、キャンセルボタンがあります。
+Fusion がドキュメントを次々に開くので、終わるまで PC は他の作業に使いにくいです。
+キャンセルすると今のファイルを終えてから止まります。
 終わると「Saved / Skipped / Errored」と、かかった時間の内訳（一覧取得・開く・書き出し・閉じる）が出て、
 スクリプトは終了します。
+
+### フリーズしているのか、動いているのか
+
+ファイルを 1 つ開いている間、Fusion は操作を受け付けません。これは Fusion の API がスクリプトを
+メインスレッドで同期実行するためで、Windows が「応答なし」と出すこともあります。見分け方は次の 2 つです。
+
+- **進捗パネルの段階とファイル名が進んでいれば動いています。** 1 ファイルあたり「開いています」が数十秒
+  続くのは普通です（図面は参照先の 3D モデルも一緒に読み込みます）
+- **ログ**（`<Directory>/<日時>.txt`）には 15 秒ごとに `... still opening X, 45 s so far` という行が入ります。
+  メモ帳などで開いて、この行の秒数が増えていれば待っている最中です
+
+「開いています」のまま 5 分以上進まないときは、見えない所で Fusion が確認ダイアログを出している可能性があります
+（参照先モデルの更新確認など）。「Open Documents Hidden」を OFF にして同じファイルを試し、
+何のダイアログが出るか見てください。
 
 ### 設定項目
 
@@ -38,7 +54,7 @@ Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を
 | Export Types | f2d → `pdf` `dxf` `dwg`、f3d → `f3d` `step` `stl` `igs` `sat` `smt` `3mf` | dxf |
 | Download Open Folder | データパネルで開いているフォルダ以下を対象にする | ON |
 | Show Project Folders / Export Projects | Download Open Folder を OFF にしたとき、プロジェクト（またはその直下フォルダ）を選ぶ | — |
-| Open Documents Hidden (faster) | ドキュメントを画面に出さずに開く。画面が切り替わらず、描画も省ける。図面の書き出しで中身が欠けるようなら OFF に | ON |
+| Open Documents Hidden (faster) | ドキュメントを画面に出さずに開く。画面が切り替わらず、描画も省ける。書き出しが進まない・中身が欠けるときは OFF に | ON |
 | Unhide All Bodies | f3d の非表示ボディも含めて書き出す（f3d 形式以外） | ON |
 | Versions | 過去バージョンも書き出す。0 なら最新だけ | 0 |
 | Save Sketches as DXF | f3d の各スケッチを DXF にする | OFF |
@@ -91,6 +107,7 @@ Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を
 
 ## 開発メモ
 
-- 本体は `DXFExporter/DXFExporter.py` の 1 ファイル。Fusion は実行のたびに読み直すので、直したらそのまま実行すればよい
+- 本体は `DXFExporter/DXFExporter.py`。進捗パネルは `DXFExporter/resources/status.html`。Fusion は実行のたびに読み直すので、直したらそのまま実行すればよい
+- 進捗パネルが作れない環境では Fusion 標準の進捗ダイアログに切り替わる
 - Fusion なしで動くテスト: `python3 DXFExporter/test_core.py`（adsk をモックして書き出しループだけ確認）
 - 元コードのライセンスは `LICENSE.upstream`（Unlicense）。このリポジトリも同じ扱いです

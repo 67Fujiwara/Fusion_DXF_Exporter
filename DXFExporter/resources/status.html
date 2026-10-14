@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>DXF Exporter</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1c1e21; --muted: #6b7280;
+    --accent: #2563eb; --accent2: #60a5fa; --ok: #16a34a; --warn: #d97706; --border: #e5e7eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15171a; --card: #1f2227; --text: #e8eaed; --muted: #9aa0a6;
+            --accent: #3b82f6; --accent2: #93c5fd; --ok: #22c55e; --warn: #f59e0b; --border: #2e3238; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.5 -apple-system, "Segoe UI", "Yu Gothic UI", "Hiragino Sans", Roboto, sans-serif; }
+  .card { margin: 12px; padding: 16px 18px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.06); }
+  .row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .phase { font-size: 15px; font-weight: 600; }
+  .count { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .file { margin-top: 4px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar { position: relative; height: 8px; margin: 14px 0 10px; background: var(--border); border-radius: 999px; overflow: hidden; }
+  .bar > i { position: absolute; inset: 0 auto 0 0; width: 0%; background: var(--accent); border-radius: 999px;
+    transition: width .35s ease; }
+  .bar.busy > i::after { content: ""; position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.45), transparent);
+    animation: sweep 1.2s linear infinite; }
+  @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+  .meta { display: flex; justify-content: space-between; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .hint { margin-top: 10px; color: var(--muted); font-size: 12px; }
+  .hint.warn { color: var(--warn); }
+  .summary { margin-top: 10px; white-space: pre-line; }
+  .actions { margin-top: 14px; display: flex; justify-content: flex-end; }
+  button { appearance: none; border: 1px solid var(--border); background: transparent; color: var(--text);
+    padding: 7px 14px; border-radius: 8px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .done .phase { color: var(--ok); }
+  .cancelled .phase { color: var(--warn); }
+</style>
+</head>
+<body>
+<div class="card" id="card">
+  <div class="row"><div class="phase" id="phase">準備中</div><div class="count" id="count"></div></div>
+  <div class="file" id="file">&nbsp;</div>
+  <div class="bar busy" id="bar"><i id="fill"></i></div>
+  <div class="meta"><span id="step">&nbsp;</span><span id="elapsed">0:00</span></div>
+  <div class="hint" id="hint">ファイルを開いている間は Fusion が操作を受け付けません。「応答なし」と出ても、この表示の段階が進めば動いています。</div>
+  <div class="summary" id="summary"></div>
+  <div class="actions"><button id="cancel">キャンセル</button></div>
+</div>
+<script>
+  const PHASES = {
+    listing:   '一覧を取得中',
+    next:      '次のファイルへ',
+    opening:   '開いています',
+    exporting: '書き出し中',
+    closing:   '閉じています',
+    done:      '完了',
+    cancelled: 'キャンセルしました',
+  };
+  const $ = id => document.getElementById(id);
+  const t0 = Date.now();
+  let stepStart = Date.now();
+  let finished = false;
+  let cancelRequested = false;
+
+  function fmt(ms) {
+    const s = Math.floor(ms / 1000);
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+  setInterval(() => {
+    if (finished) return;
+    $('elapsed').textContent = fmt(Date.now() - t0);
+    $('step').textContent = 'この段階 ' + fmt(Date.now() - stepStart);
+  }, 500);
+
+  function render(d) {
+    const phase = d.phase || 'listing';
+    $('phase').textContent = PHASES[phase] || phase;
+    $('file').textContent = d.file || '';
+    if (d.total) {
+      $('count').textContent = (Math.min(d.index + (phase === 'done' ? 0 : 1), d.total)) + ' / ' + d.total;
+      $('fill').style.width = (100 * (phase === 'done' ? d.total : d.index) / d.total) + '%';
+    } else {
+      $('count').textContent = '';
+    }
+    stepStart = Date.now();
+    finished = (phase === 'done' || phase === 'cancelled');
+    $('card').className = 'card ' + (finished ? phase : '');
+    $('bar').classList.toggle('busy', !finished);
+    $('summary').textContent = d.summary || '';
+    $('cancel').disabled = finished;
+    if (finished) { $('hint').textContent = ''; $('fill').style.width = phase === 'done' ? '100%' : $('fill').style.width; }
+    else if (cancelRequested) { $('hint').textContent = '今のファイルが終わったら止まります。'; $('hint').className = 'hint warn'; }
+    return 'OK';
+  }
+
+  window.fusionJavaScriptHandler = {
+    handle: function (action, data) {
+      try { if (action === 'status') return render(JSON.parse(data)); }
+      catch (e) { return 'error: ' + e; }
+      return 'ignored';
+    }
+  };
+
+  $('cancel').addEventListener('click', () => {
+    cancelRequested = true;
+    $('cancel').disabled = true;
+    $('hint').textContent = '今のファイルが終わったら止まります。';
+    $('hint').className = 'hint warn';
+    if (window.adsk) adsk.fusionSendData('cancel', '');
+  });
+
+  (function announceReady() {
+    if (window.adsk) adsk.fusionSendData('ready', '');
+    else setTimeout(announceReady, 100);
+  })();
+</script>
+</body>
+</html>

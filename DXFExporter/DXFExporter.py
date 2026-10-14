@@ -18,6 +18,7 @@ import itertools
 import json
 import os
 import re
+import threading
 import time
 import traceback
 import zipfile
@@ -54,11 +55,52 @@ last_selected_projects = None
 last_settings_path = Path(__file__).parent / 'last_settings.json'
 
 
+log_lock = threading.Lock()
+
+
 def log(*args):
     if log_fh is None:
         return
-    print(f'[{time.perf_counter() - log_t0:7.1f}s]', *args, file=log_fh)
-    log_fh.flush()
+    with log_lock:
+        print(f'[{time.perf_counter() - log_t0:7.1f}s]', *args, file=log_fh)
+        log_fh.flush()
+
+
+# ----------------------------------------------------------------------------- status
+# What the script is doing right now, for the on-screen panel and for the heartbeat
+# thread that writes "still opening X, 45 s so far" into the log while the main
+# thread is stuck inside a Fusion call.
+
+status_hook = None            # callable(phase, label) set by run_main
+current_step = ('', '', 0.0)  # (phase, label, started_at)
+
+
+def set_status(phase: str, label: str = ''):
+    global current_step
+    current_step = (phase, label, time.perf_counter())
+    if status_hook is not None:
+        try:
+            status_hook(phase, label)
+        except Exception:
+            log(f'status hook failed\n{traceback.format_exc()}')
+
+
+class Heartbeat(threading.Thread):
+    """Every 15 s, note in the log how long the current step has been running."""
+
+    def __init__(self, interval=15.0):
+        super().__init__(daemon=True)
+        self._stop = threading.Event()
+        self._interval = interval
+
+    def run(self):
+        while not self._stop.wait(self._interval):
+            phase, label, started = current_step
+            if phase:
+                log(f'... still {phase} {label}, {time.perf_counter() - started:.0f} s so far')
+
+    def stop(self):
+        self._stop.set()
 
 
 def init_directory(name):
@@ -177,6 +219,10 @@ class FileInfo:
     def label(self):
         return f'`{self.name}` v{self.version}'
 
+    @property
+    def title(self):
+        return f'{self.name} v{self.version}'
+
 
 class LazyDocument:
     """Opens the Fusion document on first use only, so files whose outputs all exist cost nothing."""
@@ -192,6 +238,7 @@ class LazyDocument:
             return
         visible = not self._ctx.open_hidden
         log(f'Opening {self.info.label}' + ('' if visible else ' (hidden)'))
+        set_status('opening', self.info.title)
         with timed('open'):
             self._document = self._ctx.app.documents.open(self.info.file, visible)
         log(f'Opened {self.info.label} in {timings.last:.1f} s')
@@ -205,6 +252,7 @@ class LazyDocument:
     def close(self):
         if self._document is None:
             return
+        set_status('closing', self.info.title)
         with timed('close'):
             self._document.close(False)  # never save
         log(f'Closed {self.info.label} in {timings.last:.1f} s')
@@ -315,6 +363,7 @@ def export_sketch(ctx: Ctx, doc: LazyDocument, component, sketch) -> Counter:
         return Counter(skipped=1)
     log(f'Exporting sketch {sketch.name} in {component.name} to {output_path}')
     output_path.parent.mkdir(exist_ok=True, parents=True)
+    set_status('exporting', f'{sketch.name}.dxf')
     with timed('export'):
         sketch.saveAsDXF(str(output_path))
     set_mtime(output_path, doc.info.date_modified)
@@ -385,6 +434,7 @@ def export_file(ctx: Ctx, format: Format, doc: LazyDocument) -> Counter:
     if ctx.unhide_all and format != Format.F3D:
         doc.unhide_all()
 
+    set_status('exporting', output_path.name)
     with timed('export'):
         em.execute(options)
     set_mtime(output_path, doc.info.date_modified)
@@ -418,6 +468,7 @@ def export_drawing(ctx: Ctx, format: Format, doc: LazyDocument) -> Counter:
         )
 
     output_path.parent.mkdir(exist_ok=True, parents=True)
+    set_status('exporting', output_path.name)
     with timed('export'):
         em.execute(create(str(output_path)))
     set_mtime(output_path, doc.info.date_modified)
@@ -431,6 +482,7 @@ def download_file(ctx: Ctx, info: FileInfo) -> Counter:
     if output_path_exists(output_path, info):
         return Counter(skipped=1)
     output_path.parent.mkdir(exist_ok=True, parents=True)
+    set_status('exporting', output_path.name)
     with timed('export'):
         info.file.download(str(output_path), None)
     set_mtime(output_path, info.date_modified)
@@ -512,6 +564,7 @@ def collect_files(ctx: Ctx, folder, recurse=True, out=None):
     if out is None:
         out = []
     log(f'Listing folder {folder.name}')
+    set_status('listing', folder.name)
     new_ctx = ctx.extend(sanitize_filename(folder.name))
     with timed('listing'):
         files = list(folder.dataFiles)
@@ -568,8 +621,6 @@ def visit_folder(ctx: Ctx, folder, recurse=True, progress=None) -> Counter:
 
 
 def main(ctx: Ctx, progress=None) -> Counter:
-    init_directory(ctx.folder)
-    init_logging(ctx.folder)
     log(ctx.dumps())
     timings.clear()
 
@@ -598,37 +649,138 @@ def main(ctx: Ctx, progress=None) -> Counter:
     return process_files(ctx, items, progress)
 
 
+PALETTE_ID = 'fujiwara_DXFExporter_status'
+cancel_requested = False
+
+
+class PaletteEventHandler(adsk.core.HTMLEventHandler):
+    """Messages from status.html: 'ready' when it has loaded, 'cancel' from its button."""
+
+    def __init__(self, palette):
+        super().__init__()
+        self._palette = palette
+
+    def notify(self, args):
+        global cancel_requested
+        try:
+            if args.action == 'cancel':
+                cancel_requested = True
+                log('Cancel requested from the status panel')
+            elif args.action == 'ready':
+                self._palette.resend()
+        except Exception:
+            message_box_traceback()
+
+
+class StatusPalette:
+    """The progress panel: an HTML palette inside Fusion (resources/status.html)."""
+
+    def __init__(self, ui):
+        old = ui.palettes.itemById(PALETTE_ID)
+        if old:
+            old.deleteMe()
+        html = Path(__file__).parent / 'resources' / 'status.html'
+        self._palette = ui.palettes.add(PALETTE_ID, 'DXF Exporter', str(html), True, True, True, 460, 300)
+        self._palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
+        handler = PaletteEventHandler(self)
+        self._palette.incomingFromHTML.add(handler)
+        handlers.append(handler)
+        self.index = 0
+        self.total = 0
+        self._last = {'phase': 'listing'}
+        self._send(self._last)
+
+    def _send(self, data):
+        self._last = data
+        self._palette.sendInfoToHTML('status', json.dumps(data, ensure_ascii=False))
+        pump_events()
+
+    def resend(self):
+        self._palette.sendInfoToHTML('status', json.dumps(self._last, ensure_ascii=False))
+
+    def __call__(self, index, total, file):
+        """Progress callback between files; True cancels."""
+        self.index, self.total = index, total
+        if cancel_requested:
+            return True
+        self._send({'phase': 'next', 'index': index, 'total': total, 'file': file.name})
+        return False
+
+    def status(self, phase, label):
+        self._send({'phase': phase, 'index': self.index, 'total': self.total, 'file': label})
+
+    def done(self, summary, cancelled=False):
+        self._send({'phase': 'cancelled' if cancelled else 'done', 'index': self.total, 'total': self.total,
+                    'summary': summary})
+
+    def hide(self):
+        try:
+            self._palette.deleteMe()
+        except Exception:
+            pass
+
+
 class ProgressDialog:
-    """Fusion progress bar with a Cancel button; returns True from __call__ when cancelled."""
+    """Fallback when the palette cannot be created: Fusion's own progress bar with Cancel."""
+
+    PHASES = {'listing': 'Listing', 'next': 'Next', 'opening': 'Opening', 'exporting': 'Exporting',
+              'closing': 'Closing'}
 
     def __init__(self, ui):
         self._pd = ui.createProgressDialog()
         self._pd.isCancelButtonShown = True
         self._shown = False
+        self.index = 0
+        self.total = 0
+
+    def _show(self):
+        if not self._shown:
+            self._pd.show('DXF Exporter', '%v / %m', 0, max(self.total, 1))
+            self._shown = True
 
     def __call__(self, index, total, file):
-        if not self._shown:
-            self._pd.show('DXF Exporter', '%v / %m', 0, max(total, 1))
-            self._shown = True
+        self.index, self.total = index, total
+        self._show()
         if self._pd.wasCancelled:
             return True
         self._pd.progressValue = index
         self._pd.message = f'{file.name}  (%v / %m)'
         return False
 
+    def status(self, phase, label):
+        self._show()
+        self._pd.message = f'{self.PHASES.get(phase, phase)} {label}  (%v / %m)'
+        pump_events()
+
+    def done(self, summary, cancelled=False):
+        pass
+
     def hide(self):
         if self._shown:
             self._pd.hide()
 
 
+def make_progress(ui):
+    try:
+        return StatusPalette(ui)
+    except Exception:
+        log(f'Status palette unavailable, using the progress dialog\n{traceback.format_exc()}')
+        return ProgressDialog(ui)
+
+
 def run_main(ctx: Ctx):
-    global log_fh
+    global log_fh, status_hook, cancel_requested
     ui = ctx.app.userInterface
     started = time.perf_counter()
-    progress = ProgressDialog(ui)
+    cancel_requested = False
+    init_directory(ctx.folder)
+    init_logging(ctx.folder)
+    progress = make_progress(ui)
+    status_hook = progress.status
+    heartbeat = Heartbeat()
+    heartbeat.start()
     try:
         counter = main(ctx, progress)
-        progress.hide()
         elapsed = time.perf_counter() - started
         summary = '\n'.join((
             ('Cancelled.  ' if counter.cancelled else '') + f'Saved {counter.saved} files',
@@ -640,13 +792,17 @@ def run_main(ctx: Ctx):
             f'Log file is at {log_file}',
         ))
         log(summary)
+        set_status('', '')
+        progress.done(summary, counter.cancelled)
         ui.messageBox(summary)
     except Exception:
-        progress.hide()
         tb = traceback.format_exc()
         ui.messageBox(f'Log file is at {log_file}\n{tb}')
         log(f'Got top level exception\n{tb}')
     finally:
+        heartbeat.stop()
+        status_hook = None
+        progress.hide()
         if log_fh is not None:
             log_fh.close()
             log_fh = None
