@@ -250,6 +250,42 @@ class ExportLoop(unittest.TestCase):
         with self.assertRaises(Exception):
             core.resolve_folder(app, 'nope', [])
 
+    def test_progress_guard_survives_a_broken_panel(self):
+        calls = []
+
+        class Broken:
+            def __call__(self, *a):
+                raise RuntimeError('palette gone')
+
+            def status(self, *a):
+                raise RuntimeError('palette gone')
+
+            def hide(self):
+                calls.append('hide-broken')
+
+        class Plain:
+            def __call__(self, index, total, file):
+                calls.append(('call', index))
+                return False
+
+            def status(self, phase, label):
+                calls.append(('status', phase))
+
+            def done(self, *a):
+                calls.append('done')
+
+            def hide(self):
+                calls.append('hide')
+
+        guard = core.ProgressGuard.__new__(core.ProgressGuard)
+        guard._backends = [lambda: Broken(), lambda: Plain()]
+        guard._impl = None
+        guard._switch()
+        self.assertFalse(guard(0, 3, FakeFile('a', 'f2d')))   # Broken raised -> swapped to Plain
+        guard.status('opening', 'a')
+        guard.done('ok')
+        self.assertEqual(calls, ['hide-broken', ('call', 0), ('status', 'opening'), 'done'])
+
     def test_tree_gen_builds_relative_path(self):
         a = SimpleNamespace(name='A', parentFolder=None)
         b = SimpleNamespace(name='B', parentFolder=a)

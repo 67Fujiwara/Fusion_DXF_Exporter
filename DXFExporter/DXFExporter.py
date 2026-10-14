@@ -758,6 +758,8 @@ class ProgressDialog:
     def __call__(self, index, total, file):
         self.index, self.total = index, total
         self._show()
+        if self._pd.maximumValue != max(total, 1):
+            self._pd.maximumValue = max(total, 1)
         if self._pd.wasCancelled:
             return True
         self._pd.progressValue = index
@@ -777,12 +779,57 @@ class ProgressDialog:
             self._pd.hide()
 
 
+class ProgressGuard:
+    """Never lets the progress UI stop the export.  Starts with the HTML panel; if any call to it
+    fails (the panel was closed, Fusion dropped it, ...) it switches to Fusion's progress dialog,
+    and if that fails too, to no UI at all.  Cancel still works through `cancel_requested`."""
+
+    def __init__(self, ui):
+        self._backends = [lambda: StatusPalette(ui), lambda: ProgressDialog(ui)]
+        self._impl = None
+        self._switch()
+
+    def _switch(self):
+        self._impl = None
+        while self._backends:
+            make = self._backends.pop(0)
+            try:
+                self._impl = make()
+                return
+            except Exception:
+                log(f'Progress UI unavailable, trying the next one\n{traceback.format_exc()}')
+
+    def _call(self, method, *args):
+        while self._impl is not None:
+            impl = self._impl
+            try:
+                return getattr(impl, method)(*args)
+            except Exception:
+                log(f'Progress UI failed in {method}, switching\n{traceback.format_exc()}')
+                try:
+                    impl.hide()
+                except Exception:
+                    pass
+                self._switch()
+        return None
+
+    def __call__(self, index, total, file):
+        if cancel_requested:
+            return True
+        return bool(self._call('__call__', index, total, file))
+
+    def status(self, phase, label):
+        self._call('status', phase, label)
+
+    def done(self, summary, cancelled=False):
+        self._call('done', summary, cancelled)
+
+    def hide(self):
+        self._call('hide')
+
+
 def make_progress(ui):
-    try:
-        return StatusPalette(ui)
-    except Exception:
-        log(f'Status palette unavailable, using the progress dialog\n{traceback.format_exc()}')
-        return ProgressDialog(ui)
+    return ProgressGuard(ui)
 
 
 def run_main(ctx: Ctx):
