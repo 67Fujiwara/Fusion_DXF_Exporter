@@ -153,7 +153,7 @@ class Ctx(NamedTuple):
         d['folder'] = Path(d['folder'])
         d['formats'] = [FormatFromName[x] for x in d['formats']]
         d['projects_folders'] = {k: set(v) for k, v in d['projects_folders'].items()}
-        d.setdefault('open_hidden', False)
+        d.setdefault('open_hidden', True)
         return cls(**d)
 
 
@@ -737,7 +737,7 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             drop.isEnabled = not use_active_folder
 
             inputs.addBoolValueInput(I.open_hidden, 'Open Documents Hidden (faster)', True, '',
-                                     last.get(I.open_hidden, False))
+                                     last.get(I.open_hidden, True))
 
             inputs.addBoolValueInput(I.unhide_all, 'Unhide All Bodies', True, '', last.get(I.unhide_all, True))
 

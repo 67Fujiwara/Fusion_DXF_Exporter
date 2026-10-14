@@ -38,7 +38,7 @@ Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を
 | Export Types | f2d → `pdf` `dxf` `dwg`、f3d → `f3d` `step` `stl` `igs` `sat` `smt` `3mf` | dxf |
 | Download Open Folder | データパネルで開いているフォルダ以下を対象にする | ON |
 | Show Project Folders / Export Projects | Download Open Folder を OFF にしたとき、プロジェクト（またはその直下フォルダ）を選ぶ | — |
-| Open Documents Hidden (faster) | ドキュメントを画面に出さずに開く。描画が省けるぶん速い。図面の書き出しで中身が欠けるようなら OFF に | OFF |
+| Open Documents Hidden (faster) | ドキュメントを画面に出さずに開く。画面が切り替わらず、描画も省ける。図面の書き出しで中身が欠けるようなら OFF に | ON |
 | Unhide All Bodies | f3d の非表示ボディも含めて書き出す（f3d 形式以外） | ON |
 | Versions | 過去バージョンも書き出す。0 なら最新だけ | 0 |
 | Save Sketches as DXF | f3d の各スケッチを DXF にする | OFF |
@@ -54,7 +54,7 @@ Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を
 |---|---|
 | ダイアログを出す前に全プロジェクト一覧を取りに行く（数秒待つ） | Download Open Folder が ON の間は取りに行かない。OFF にした瞬間に初めて取る |
 | ファイルごとに必ず `file.versions`（サーバー往復）を読む | Versions が 0（既定）なら読まない |
-| ドキュメントは常に表示して開く | 「Open Documents Hidden」で非表示で開ける |
+| ドキュメントは常に表示して開く（1 枚ごとに画面が切り替わる） | 既定で非表示のまま開く（Open Documents Hidden） |
 | 対象外の形式でも一通りコードを通る | f2d は図面形式だけ、f3d はモデル形式だけ見る。出力が全部揃っていればドキュメントを開かない |
 
 ドキュメントを開く時間そのものは Fusion 側の都合なので、ここは変えられません。
@@ -66,7 +66,7 @@ Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を
 
 | 時間が多い所 | 意味 | できること |
 |---|---|---|
-| opening | Fusion が図面と、図面が参照する 3D モデルをクラウドから落として開いている | 「Open Documents Hidden」を ON にして比べる。それ以上はスクリプトからは縮められない |
+| opening | Fusion が図面と、図面が参照する 3D モデルをクラウドから落として開いている | 「Open Documents Hidden」が ON か確かめる。それ以上はスクリプトからは縮められない |
 | exporting | Fusion の DXF 書き出しそのもの | 無い。シート数・ビュー数に比例する |
 | listing | フォルダやファイルの情報をハブから取っている | 普通は数秒以内。多ければ回線の問題 |
 | closing | ドキュメントを閉じている | 普通は 1 秒未満 |
