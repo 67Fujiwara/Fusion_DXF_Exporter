@@ -1,4 +1,4 @@
-"""Plain-Python checks for exporter_core (no Fusion needed):  python3 test_core.py
+"""Plain-Python checks for DXFExporter (no Fusion needed):  python3 test_core.py
 
 adsk is mocked, so this only covers the export loop (which files get opened, which export
 methods get called, version handling), not the dialog.
@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 for name in ('adsk', 'adsk.core', 'adsk.fusion', 'adsk.drawing'):
     sys.modules[name] = Mock()
 
-import exporter_core as core  # noqa: E402
+import DXFExporter as core  # noqa: E402
 
 core.set_mtime = lambda path, t: None
 Path.mkdir = lambda *a, **k: None

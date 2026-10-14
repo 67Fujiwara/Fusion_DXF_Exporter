@@ -1,13 +1,14 @@
-"""Bulk exporter for Fusion: dialog + export loop.
+"""Fusion script: bulk export f2d drawings to DXF / DWG / PDF (and f3d to STEP, STL, ...).
 
 Trimmed and reshaped from aconz2/Fusion360Exporter (public domain).  Differences:
 
-* add-in friendly: no adsk.terminate(), handlers live in module lists the entry file clears
 * f2d drawings export to PDF, DXF and DWG (DXF/DWG need the Sept 2026 Fusion API or newer)
 * the project list is only fetched when it is actually needed (dialog opens instantly)
 * file.versions (one server round trip per file) is never touched unless old versions were asked for
 * documents can be opened hidden, which skips most of the UI work per file
 * a document is only opened when at least one requested output is still missing
+
+Run it from UTILITIES > ADD-INS > Scripts and Add-Ins (Shift+S): pick DXFExporter, hit Run.
 """
 import base64
 import hashlib
@@ -39,8 +40,7 @@ VERSION_SEPARATOR = '_'
 log_file = None
 log_fh = None
 
-handlers = []          # the command-created handler; owned by ExporterAddIn.run()/stop()
-dialog_handlers = []   # execute / inputChanged handlers of the dialog currently open
+handlers = []   # keep every event handler alive for the lifetime of the script
 
 # `project` or `project/folder` as shown in the dropdown -> (project id, folder id or None)
 project_folders_d = {}
@@ -592,9 +592,11 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
             on_execute = ExecuteHandler()
             on_input_changed = InputChangedHandler()
+            on_destroy = DestroyHandler()
             cmd.execute.add(on_execute)
             cmd.inputChanged.add(on_input_changed)
-            dialog_handlers[:] = [on_execute, on_input_changed]
+            cmd.destroy.add(on_destroy)
+            handlers.extend([on_execute, on_input_changed, on_destroy])
 
             inputs = cmd.commandInputs
             last = load_last_settings()
@@ -703,3 +705,40 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
             run_main(ctx)
         except Exception:
             message_box_traceback()
+
+
+class DestroyHandler(adsk.core.CommandEventHandler):
+    """The dialog is gone (OK was handled or Cancel pressed): end the script."""
+
+    def notify(self, args):
+        try:
+            adsk.terminate()
+        except Exception:
+            message_box_traceback()
+
+
+CMD_ID = 'fujiwara_DXFExporter'
+
+
+def run(context):
+    ui = None
+    try:
+        app = adsk.core.Application.get()
+        ui = app.userInterface
+        cmd_defs = ui.commandDefinitions
+
+        # a stale definition from the previous run would double every input
+        cmd_def = cmd_defs.itemById(CMD_ID)
+        if cmd_def:
+            cmd_def.deleteMe()
+        cmd_def = cmd_defs.addButtonDefinition(CMD_ID, 'DXF Exporter', 'Bulk export f2d/f3d')
+
+        on_created = CommandCreatedHandler()
+        cmd_def.commandCreated.add(on_created)
+        handlers.append(on_created)
+
+        cmd_def.execute()
+        adsk.autoTerminate(False)   # stay alive until DestroyHandler calls adsk.terminate()
+    except Exception:
+        if ui:
+            ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))

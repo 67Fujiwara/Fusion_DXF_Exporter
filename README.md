@@ -1,34 +1,32 @@
-# Fusion Exporter アドイン（DXF 対応・軽量版）
+# Fusion DXF Exporter（スクリプト版）
 
 Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を STEP / STL / f3d など**に
-一括で書き出す Fusion アドインです。[aconz2/Fusion360Exporter](https://github.com/aconz2/Fusion360Exporter)
-（パブリックドメイン）を元に、アドイン化と DXF 対応、速度面の手直しをしています。
+一括で書き出す Fusion スクリプトです。[aconz2/Fusion360Exporter](https://github.com/aconz2/Fusion360Exporter)
+（パブリックドメイン）を元に、DXF 対応と速度面の手直しをしています。
 
-書き出した DXF は [Panel Studio](https://github.com/67Fujiwara/panel-studio) の「盤サイズ → DXF 取り込み」や、キャンバスの下敷きにそのまま使えます。
+アドインではなく**スクリプト**なので、常駐もツールバーのボタンもありません。
+使うときに Shift+S から実行し、終わると自動で終了します。
 
 ## 入れ方
 
-1. このリポジトリを clone するか「Code > Download ZIP」で落として解凍し、中の **`ExporterAddIn` フォルダ**を
+1. このリポジトリを clone するか「Code > Download ZIP」で落として解凍し、中の **`DXFExporter` フォルダ**を
    消さない場所に置く（フォルダ名は変えない。Fusion はフォルダ名と同じ名前の `.py` を探す）
 2. Fusion で **ユーティリティ > アドイン > スクリプトとアドイン**（Shift+S）
-3. 「アドイン」タブの **＋** → このフォルダを選ぶ
-4. 一覧に出た **Exporter** の「実行」を ON → ユーティリティ > アドイン パネルにボタンが出る
-5. **「起動時に実行」** にチェック（manifest で既定 ON にしてあるので、出ていればそのままで可）
-
-以後は Fusion を起動するたびにボタンが出ています。押すと設定ダイアログが**すぐに**開きます。
+3. 「スクリプト」タブの **＋** → `DXFExporter` フォルダを選ぶ
+4. 一覧の「マイスクリプト」に **DXFExporter** が出れば完了
 
 ## 使い方
 
 1. データパネルで書き出したいフォルダを開く
-2. ツールバーの **Exporter** を押す
+2. Shift+S → DXFExporter を選んで **実行**
 3. 設定を確認して OK
 
 既定では **「Download Open Folder」ON ＋ Export Types = dxf** なので、
-「開いているフォルダ以下の f2d 図面を全部 DXF にする」が最短 3 クリックで走ります。
-前回の設定は `last_settings.json`（このフォルダに自動生成）に残り、次回の初期値になります。
+「開いているフォルダ以下の f2d 図面を全部 DXF にする」がそのまま走ります。
+前回の設定は `last_settings.json`（`DXFExporter` フォルダに自動生成）に残り、次回の初期値になります。
 
 実行中は Fusion がドキュメントを次々に開くので、終わるまで PC は他の作業に使いにくいです。
-終わると「Saved / Skipped / Errored / Took n s」の要約が出ます。
+終わると「Saved / Skipped / Errored / Took n s」の要約が出て、スクリプトは終了します。
 
 ### 設定項目
 
@@ -66,11 +64,17 @@ Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を
 古い Fusion では「This Fusion build cannot export drawings as DXF」とログに残してその図面を errored に数え、
 残りの処理は続けます（Fusion を更新するか、Export Types から dxf/dwg を外してください）。
 
+## スクリプトとアドインの違い
+
+| | スクリプト（この版） | アドイン |
+|---|---|---|
+| 起動 | Shift+S → 選んで実行 | ツールバーのボタン |
+| Fusion 起動時 | 何もしない | 自動でロードして常駐 |
+| ファイル構成 | `DXFExporter.py` 1 本 | 入口とコアの 2 本＋アイコン |
+| 書き出しの中身・速さ | 同じ | 同じ |
+
 ## 開発メモ
 
-- `ExporterAddIn.py` = 入口（ボタンの登録と片付けだけ）、`exporter_core.py` = 本体
-- `exporter_core.py` を直しているときは `ExporterAddIn.py` の `DEV_RELOAD = True` にすると、
-  ボタンを押すたびに読み直します（配布時は False に戻す）
-- Fusion なしで動くテスト: `python3 test_core.py`（adsk をモックして書き出しループだけ確認）
+- 本体は `DXFExporter/DXFExporter.py` の 1 ファイル。Fusion は実行のたびに読み直すので、直したらそのまま実行すればよい
+- Fusion なしで動くテスト: `python3 DXFExporter/test_core.py`（adsk をモックして書き出しループだけ確認）
 - 元コードのライセンスは `LICENSE.upstream`（Unlicense）。このリポジトリも同じ扱いです
-- 同じものを [panel-studio](https://github.com/67Fujiwara/panel-studio) の `fusion/ExporterAddIn/` にも置いています

@@ -1,0 +1,12 @@
+{
+    "autodeskProduct": "Fusion",
+    "type": "script",
+    "id": "b1449aa2-4b94-40e0-9398-1028e9c8d9b6",
+    "author": "67Fujiwara (based on aconz2/Fusion360Exporter)",
+    "description": {
+        "": "Bulk export f2d drawings to DXF/DWG/PDF and f3d to STEP/STL etc.",
+        "ja": "f2d 図面を DXF・DWG・PDF に、f3d を STEP・STL などに一括書き出し"
+    },
+    "version": "1.1.0",
+    "supportedOS": "windows|mac"
+}
