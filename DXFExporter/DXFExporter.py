@@ -77,6 +77,105 @@ def set_status(phase: str, label: str = ''):
             log(f'status hook failed\n{traceback.format_exc()}')
 
 
+def init_directory(name):
+    directory = Path(name)
+    directory.mkdir(exist_ok=True, parents=True)
+    return directory
+
+
+def init_logging(directory):
+    global log_file, log_fh, log_t0
+    log_t0 = time.perf_counter()
+    log_file = directory / '{:%Y_%m_%d_%H_%M}.txt'.format(datetime.now())
+    log_fh = open(log_file, 'w', encoding='utf-8')
+
+
+def load_last_settings():
+    if not last_settings_path.exists():
+        return {}
+    try:
+        with open(last_settings_path, encoding='utf-8') as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def save_last_settings(d):
+    with open(last_settings_path, 'w', encoding='utf-8') as fh:
+        json.dump(d, fh, indent=2, ensure_ascii=False)
+
+
+# f3d first: it is exported before anything gets unhidden so its thumbnail stays as designed
+class Format(Enum):
+    F3D = 'f3d'
+    STEP = 'step'
+    STL = 'stl'
+    IGES = 'igs'
+    SAT = 'sat'
+    SMT = 'smt'
+    TMF = '3mf'
+    PDF = 'pdf'
+    DXF = 'dxf'
+    DWG = 'dwg'
+
+
+FormatFromName = {x.value: x for x in Format}
+
+DESIGN_FORMATS = (Format.F3D, Format.STEP, Format.STL, Format.IGES, Format.SAT, Format.SMT, Format.TMF)
+DRAWING_FORMATS = (Format.PDF, Format.DXF, Format.DWG)
+
+# name of the DrawingExportManager factory for each drawing format
+DRAWING_EXPORT_METHODS = {
+    Format.PDF: 'createPDFExportOptions',
+    Format.DXF: 'createDXFExportOptions',
+    Format.DWG: 'createDWGExportOptions',
+}
+
+DEFAULT_SELECTED_FORMATS = {Format.DXF.value}
+
+archive_extensions = ['.zip', '.rar', '.gz', '.tar.gz', '.tar.bz2', '.tar.xz']
+
+
+class Ctx(NamedTuple):
+    app: adsk.core.Application
+    folder: Path
+    formats: List[Format]
+    use_active_folder: bool                 # True: the Data Panel's open folder; False: project_id/folder_ids
+    project_id: str
+    folder_ids: List[str]                   # folder ids from the project root (excluded) down to the target
+    unhide_all: bool
+    save_sketches: bool
+    num_versions: int                       # -1 means all versions
+    export_non_design_files: bool
+    open_hidden: bool                       # open documents without showing them (faster)
+    include_subfolders: bool                # also walk the sub-folders of the chosen folder(s)
+
+    def extend(self, other):
+        return self._replace(folder=self.folder / other)
+
+    def to_dict(self):
+        d = self._asdict()
+        d.pop('app')
+        d['folder'] = str(d['folder'])
+        d['formats'] = [x.value for x in d['formats']]
+        return d
+
+    def dumps(self):
+        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, d, app):
+        d = dict(d)
+        d['app'] = app
+        d['folder'] = Path(d['folder'])
+        d['formats'] = [FormatFromName[x] for x in d['formats']]
+        d.setdefault('project_id', '')
+        d.setdefault('folder_ids', [])
+        d.setdefault('open_hidden', True)
+        d.setdefault('include_subfolders', True)
+        return cls(**d)
+
+
 class FileInfo:
     """The DataFile properties we use, read once: each read can be a round trip to the hub."""
 
