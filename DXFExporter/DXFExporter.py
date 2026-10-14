@@ -173,6 +173,7 @@ class Ctx(NamedTuple):
     num_versions: int                       # -1 means all versions
     export_non_design_files: bool
     open_hidden: bool                       # open documents without showing them (faster)
+    include_subfolders: bool                # also walk the sub-folders of the chosen folder(s)
 
     def extend(self, other):
         return self._replace(folder=self.folder / other)
@@ -196,6 +197,7 @@ class Ctx(NamedTuple):
         d['formats'] = [FormatFromName[x] for x in d['formats']]
         d['projects_folders'] = {k: set(v) for k, v in d['projects_folders'].items()}
         d.setdefault('open_hidden', True)
+        d.setdefault('include_subfolders', True)
         return cls(**d)
 
 
@@ -392,6 +394,32 @@ def tree_gen(folder) -> Path:
         df = df.parentFolder
     names.reverse()
     return Path(*names) if names else Path()
+
+
+def describe_folder(folder) -> str:
+    """`Project / A / B / C` for a data folder, the way the Data Panel's breadcrumb shows it."""
+    names = []
+    df = folder
+    while df is not None:
+        names.append(df.name)
+        df = df.parentFolder
+    names.reverse()
+    try:
+        project = folder.parentProject.name
+    except Exception:
+        project = None
+    return ' / '.join(([project] if project else []) + names)
+
+
+def active_folder_text(app) -> str:
+    """What 'Download Open Folder' will export, for the dialog."""
+    try:
+        folder = app.data.activeFolder
+    except Exception:
+        folder = None
+    if folder is None:
+        return 'データパネルでフォルダを開いてから実行してください'
+    return describe_folder(folder)
 
 
 def export_filename(ctx: Ctx, info: FileInfo, format: Format = None) -> Path:
@@ -629,21 +657,22 @@ def main(ctx: Ctx, progress=None) -> Counter:
         with timed('listing'):
             root_folder = ctx.app.data.activeFolder
             root_ctx = ctx.extend(tree_gen(root_folder))
-        collect_files(root_ctx, root_folder, True, items)
+        log(f'Open folder: {describe_folder(root_folder)}')
+        collect_files(root_ctx, root_folder, ctx.include_subfolders, items)
     else:
         for project_id, folder_ids in ctx.projects_folders.items():
             with timed('listing'):
                 project = ctx.app.data.dataProjects.itemById(project_id)
                 root = project.rootFolder
             if not folder_ids:
-                collect_files(ctx, root, True, items)
+                collect_files(ctx, root, ctx.include_subfolders, items)
             elif set(folder_ids) == {root.id}:
                 collect_files(ctx, root, False, items)
             else:
                 with timed('listing'):
                     chosen = [f for f in root.dataFolders if f.id in folder_ids]
                 for folder in chosen:
-                    collect_files(ctx, folder, True, items)
+                    collect_files(ctx, folder, ctx.include_subfolders, items)
 
     log(f'{len(items)} files to visit')
     return process_files(ctx, items, progress)
@@ -831,6 +860,8 @@ class I(StrEnum):
     version_separator_is_space = 'version_separator_is_space'
     export_non_design_files = 'export_non_design_files'
     open_hidden = 'open_hidden'
+    include_subfolders = 'include_subfolders'
+    target = 'target'   # read-only text: which folder will be exported
 
 
 def populate_data_projects_list(dropdown, show_folders=False, selected=None):
@@ -866,6 +897,8 @@ class InputChangedHandler(adsk.core.InputChangedEventHandler):
                 use_active = changed.value
                 inputs.itemById(I.projects).isEnabled = not use_active
                 inputs.itemById(I.show_folders).isEnabled = not use_active
+                inputs.itemById(I.target).text = (active_folder_text(adsk.core.Application.get()) if use_active
+                                                  else 'Export Projects で選んだプロジェクト')
                 if not use_active and not projects_loaded:
                     populate_data_projects_list(inputs.itemById(I.projects),
                                                 inputs.itemById(I.show_folders).value,
@@ -907,6 +940,13 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
             use_active_folder = last.get(I.use_active_folder, True)
             inputs.addBoolValueInput(I.use_active_folder, 'Download Open Folder', True, '', use_active_folder)
+
+            target = (active_folder_text(adsk.core.Application.get()) if use_active_folder
+                      else 'Export Projects で選んだプロジェクト')
+            inputs.addTextBoxCommandInput(I.target, 'Target', target, 2, True)
+
+            inputs.addBoolValueInput(I.include_subfolders, 'Include Subfolders', True, '',
+                                     last.get(I.include_subfolders, True))
 
             show_folders = last.get(I.show_folders, False)
             inputs.addBoolValueInput(I.show_folders, 'Show Project Folders', True, '', show_folders)
@@ -973,6 +1013,7 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 I.show_folders: iv(I.show_folders),
                 I.projects: isel(I.projects) if projects_loaded else (last_selected_projects or []),
                 I.open_hidden: iv(I.open_hidden),
+                I.include_subfolders: iv(I.include_subfolders),
                 I.unhide_all: iv(I.unhide_all),
                 I.save_sketches: iv(I.save_sketches),
                 I.version_count: iv(I.version_count),
@@ -994,6 +1035,7 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 num_versions=-1 if iv(I.all_versions) else iv(I.version_count),
                 export_non_design_files=iv(I.export_non_design_files),
                 open_hidden=iv(I.open_hidden),
+                include_subfolders=iv(I.include_subfolders),
             )
             run_main(ctx)
         except Exception:

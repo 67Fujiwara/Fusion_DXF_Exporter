@@ -17,9 +17,15 @@ Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を
 
 ## 使い方
 
-1. データパネルで書き出したいフォルダを開く
+1. 左上のグリッドのアイコンで **データパネル**を開き、書き出したいフォルダの**中に入る**
+   （上のパンくずにそのフォルダ名が出ている状態）。図面を開いているだけではだめです
 2. Shift+S → DXFExporter を選んで **実行**
-3. 設定を確認して OK
+3. ダイアログの **Target** に「プロジェクト / … / フォルダ名」が出るので、そのフォルダで合っているか見る。
+   違っていればキャンセルし、データパネルでフォルダに入り直してから実行し直す
+4. 設定を確認して OK
+
+Fusion が「開いているフォルダ」として返すのは、データパネルで最後に入ったフォルダです。
+データパネルを閉じていても前に入ったフォルダが残っているので、Target の表示で確かめてください。
 
 既定では **「Download Open Folder」ON ＋ Export Types = dxf** なので、
 「開いているフォルダ以下の f2d 図面を全部 DXF にする」がそのまま走ります。
@@ -52,7 +58,9 @@ Fusion がドキュメントを次々に開くので、終わるまで PC は他
 |---|---|---|
 | Directory | 出力先 | デスクトップ/Fusion360Export |
 | Export Types | f2d → `pdf` `dxf` `dwg`、f3d → `f3d` `step` `stl` `igs` `sat` `smt` `3mf` | dxf |
-| Download Open Folder | データパネルで開いているフォルダ以下を対象にする | ON |
+| Download Open Folder | データパネルで開いているフォルダを対象にする | ON |
+| Target | （表示のみ）これから見に行くフォルダ。データパネルのパンくずと同じ並び | — |
+| Include Subfolders | そのフォルダの下のサブフォルダも全部たどる。OFF なら開いているフォルダの直下だけ | ON |
 | Show Project Folders / Export Projects | Download Open Folder を OFF にしたとき、プロジェクト（またはその直下フォルダ）を選ぶ | — |
 | Open Documents Hidden (faster) | ドキュメントを画面に出さずに開く。画面が切り替わらず、描画も省ける。書き出しが進まない・中身が欠けるときは OFF に | ON |
 | Unhide All Bodies | f3d の非表示ボディも含めて書き出す（f3d 形式以外） | ON |

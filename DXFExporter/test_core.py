@@ -83,7 +83,7 @@ def make_ctx(formats, **kw):
     app = SimpleNamespace(documents=FakeDocuments())
     args = dict(app=app, folder=Path('/out'), formats=formats, projects_folders={}, use_active_folder=True,
                 unhide_all=False, save_sketches=False, num_versions=0, export_non_design_files=False,
-                open_hidden=False)
+                open_hidden=False, include_subfolders=True)
     args.update(kw)
     return core.Ctx(**args)
 
@@ -218,6 +218,21 @@ class ExportLoop(unittest.TestCase):
         self.assertEqual(names, sorted(['VSLP0002205-guide_v1.pdf', 'VSLP0002205-guide_v1.dxf',
                                         'VSLP0002205-guide_v1.step', 'VSLP0002207-angle_v1.pdf',
                                         'VSLP0002207-angle_v1.dxf', 'VSLP0002207-angle_v1.step']))
+
+    def test_subfolders_only_when_asked(self):
+        ctx = make_ctx([core.Format.DXF])
+        sub = FakeFolder('sub', [FakeFile('inner', 'f2d')])
+        top = FakeFolder('top', [FakeFile('outer', 'f2d')], dataFolders=[sub])
+        with_sub = [f.name for _, f in core.collect_files(ctx, top, True)]
+        without = [f.name for _, f in core.collect_files(ctx, top, False)]
+        self.assertEqual(with_sub, ['outer', 'inner'])
+        self.assertEqual(without, ['outer'])
+
+    def test_describe_folder_reads_like_the_breadcrumb(self):
+        project = SimpleNamespace(name='ウリセス')
+        a = SimpleNamespace(name='予備枠', parentFolder=None, parentProject=project)
+        b = SimpleNamespace(name='DXF+STEP+PDF', parentFolder=a, parentProject=project)
+        self.assertEqual(core.describe_folder(b), 'ウリセス / 予備枠 / DXF+STEP+PDF')
 
     def test_tree_gen_builds_relative_path(self):
         a = SimpleNamespace(name='A', parentFolder=None)
