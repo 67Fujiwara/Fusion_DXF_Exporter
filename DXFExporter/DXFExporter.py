@@ -679,8 +679,11 @@ class StatusPalette:
         old = ui.palettes.itemById(PALETTE_ID)
         if old:
             old.deleteMe()
-        html = Path(__file__).parent / 'resources' / 'status.html'
-        self._palette = ui.palettes.add(PALETTE_ID, 'DXF Exporter', str(html), True, True, True, 460, 300)
+        # Must be a real URL: a Windows path with backslashes gets mangled into file:///C:/%5CUsers...
+        html = (Path(__file__).parent / 'resources' / 'status.html').resolve()
+        if not html.exists():
+            raise FileNotFoundError(html)
+        self._palette = ui.palettes.add(PALETTE_ID, 'DXF Exporter', html.as_uri(), True, True, True, 460, 300)
         self._palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
         handler = PaletteEventHandler(self)
         self._palette.incomingFromHTML.add(handler)
