@@ -94,7 +94,7 @@ class ExportLoop(unittest.TestCase):
         core.output_path_exists = lambda path, file: str(path) in self.existing
         self.drawing_em = FakeExportManager(['createPDFExportOptions', 'createDXFExportOptions'])
         self.design_em = FakeExportManager(['createSTEPExportOptions', 'createFusionArchiveExportOptions'])
-        root = SimpleNamespace(name='root', sketches=[], occurrences=[])
+        root = SimpleNamespace(name='root', sketches=[], occurrences=[], bRepBodies=[], meshBodies=[])
         core.adsk.drawing.DrawingDocument.cast = lambda d: SimpleNamespace(
             drawing=SimpleNamespace(exportManager=self.drawing_em))
         core.adsk.fusion.FusionDocument.cast = lambda d: SimpleNamespace(
@@ -201,6 +201,23 @@ class ExportLoop(unittest.TestCase):
             core.application_gone = lambda: False
         self.assertTrue(c.cancelled)
         self.assertEqual(c.errored, 1)   # the second and third file were not even tried
+
+    def test_dxf_pdf_step_on_a_mixed_folder(self):
+        """The screenshot folder: a drawing and a model per part, Export Types = dxf + pdf + step."""
+        ctx = make_ctx([core.Format.DXF, core.Format.PDF, core.Format.STEP], unhide_all=True)
+        files = [FakeFile('VSLP0002205-guide', 'f2d'), FakeFile('VSLP0002205-guide', 'f3d'),
+                 FakeFile('VSLP0002207-angle', 'f2d'), FakeFile('VSLP0002207-angle', 'f3d')]
+        c = core.visit_folder(ctx, FakeFolder('DXF+STEP+PDF', files))
+        self.assertEqual((c.saved, c.skipped, c.errored), (6, 0, 0))
+        # each document is opened exactly once, whatever the number of formats
+        self.assertEqual(len(ctx.app.documents.opened), 4)
+        self.assertEqual([f for f, _ in self.drawing_em.created],
+                         ['createPDFExportOptions', 'createDXFExportOptions'] * 2)
+        self.assertEqual([f for f, _ in self.design_em.created], ['createSTEPExportOptions'] * 2)
+        names = sorted(Path(p).name for _, p in self.drawing_em.created + self.design_em.created)
+        self.assertEqual(names, sorted(['VSLP0002205-guide_v1.pdf', 'VSLP0002205-guide_v1.dxf',
+                                        'VSLP0002205-guide_v1.step', 'VSLP0002207-angle_v1.pdf',
+                                        'VSLP0002207-angle_v1.dxf', 'VSLP0002207-angle_v1.step']))
 
     def test_tree_gen_builds_relative_path(self):
         a = SimpleNamespace(name='A', parentFolder=None)
