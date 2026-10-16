@@ -7,6 +7,6 @@
         "": "Bulk export f2d drawings to DXF/DWG/PDF and f3d to STEP/STL etc.",
         "ja": "f2d 図面を DXF・DWG・PDF に、f3d を STEP・STL などに一括書き出し"
     },
-    "version": "1.1.0",
+    "version": "1.2.0",
     "supportedOS": "windows|mac"
 }

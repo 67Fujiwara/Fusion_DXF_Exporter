@@ -1,4 +1,4 @@
-# Fusion DXF Exporter（スクリプト版）
+# Fusion Exporter（スクリプト版）
 
 Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を STEP / STL / f3d など**に
 一括で書き出す Fusion スクリプトです。[aconz2/Fusion360Exporter](https://github.com/aconz2/Fusion360Exporter)
@@ -9,15 +9,18 @@ Fusion のクラウド上にある **f2d 図面を DXF / DWG / PDF**、**f3d を
 
 ## 入れ方
 
-1. このリポジトリを clone するか「Code > Download ZIP」で落として解凍し、中の **`DXFExporter` フォルダ**を
+1. このリポジトリを clone するか「Code > Download ZIP」で落として解凍し、中の **`Exporter` フォルダ**を
    消さない場所に置く（フォルダ名は変えない。Fusion はフォルダ名と同じ名前の `.py` を探す）
 2. Fusion で **ユーティリティ > アドイン > スクリプトとアドイン**（Shift+S）
-3. 「スクリプト」タブの **＋** → `DXFExporter` フォルダを選ぶ
-4. 一覧の「マイスクリプト」に **DXFExporter** が出れば完了
+3. 「スクリプト」タブの **＋** → `Exporter` フォルダを選ぶ
+4. 一覧の「マイスクリプト」に **Exporter** が出れば完了
+
+以前 `DXFExporter` の名前で登録していた場合は、一覧の `DXFExporter` を右クリック →「削除」で外してから、
+上の手順で `Exporter` フォルダを追加し直してください（Fusion はフォルダ名と `.py` の名前で探すため）。
 
 ## 使い方
 
-1. Shift+S → DXFExporter を選んで **実行**
+1. Shift+S → Exporter を選んで **実行**
 2. 書き出すフォルダを決める。やり方は 2 つ
    - **Download Open Folder を ON**：データパネルで最後に入ったフォルダが対象。実行前に左上のグリッドの
      アイコンでデータパネルを開き、目当てのフォルダの中に入っておく
@@ -32,7 +35,7 @@ Fusion が「開いているフォルダ」として返すのは、データパ�
 
 既定では **「Download Open Folder」ON ＋ Export Types = dxf** なので、
 「開いているフォルダ以下の f2d 図面を全部 DXF にする」がそのまま走ります。
-前回の設定は `last_settings.json`（`DXFExporter` フォルダに自動生成）に残り、次回の初期値になります。
+前回の設定は `last_settings.json`（`Exporter` フォルダに自動生成）に残り、次回の初期値になります。
 
 実行中は Fusion の中に **進捗パネル**が出ます。今の段階（一覧を取得中 / 開いています / 書き出し中 / 閉じています）、
 ファイル名、何件目か、経過時間、キャンセルボタンがあります。
@@ -111,12 +114,12 @@ Fusion がドキュメントを次々に開くので、終わるまで PC は他
 |---|---|---|
 | 起動 | Shift+S → 選んで実行 | ツールバーのボタン |
 | Fusion 起動時 | 何もしない | 自動でロードして常駐 |
-| ファイル構成 | `DXFExporter.py` 1 本 | 入口とコアの 2 本＋アイコン |
+| ファイル構成 | `Exporter.py` 1 本 | 入口とコアの 2 本＋アイコン |
 | 書き出しの中身・速さ | 同じ | 同じ |
 
 ## 開発メモ
 
-- 本体は `DXFExporter/DXFExporter.py`。進捗パネルは `DXFExporter/resources/status.html`。Fusion は実行のたびに読み直すので、直したらそのまま実行すればよい
+- 本体は `Exporter/Exporter.py`。進捗パネルは `Exporter/resources/status.html`。Fusion は実行のたびに読み直すので、直したらそのまま実行すればよい
 - 進捗パネルが作れない環境では Fusion 標準の進捗ダイアログに切り替わる
-- Fusion なしで動くテスト: `python3 DXFExporter/test_core.py`（adsk をモックして書き出しループだけ確認）
+- Fusion なしで動くテスト: `python3 Exporter/test_core.py`（adsk をモックして書き出しループだけ確認）
 - 元コードのライセンスは `LICENSE.upstream`（Unlicense）。このリポジトリも同じ扱いです
