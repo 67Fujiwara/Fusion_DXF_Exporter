@@ -1,4 +1,4 @@
-"""Plain-Python checks for Exporter (no Fusion needed):  python3 test_core.py
+"""Plain-Python checks for ExporterV2 (no Fusion needed):  python3 test_core.py
 
 adsk is mocked, so this only covers the export loop (which files get opened, which export
 methods get called, version handling), not the dialog.
@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 for name in ('adsk', 'adsk.core', 'adsk.fusion', 'adsk.drawing'):
     sys.modules[name] = Mock()
 
-import Exporter as core  # noqa: E402
+import ExporterV2 as core  # noqa: E402
 
 core.set_mtime = lambda path, t: None
 core.application_gone = lambda: False

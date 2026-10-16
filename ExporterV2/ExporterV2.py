@@ -9,7 +9,7 @@ Trimmed and reshaped from aconz2/Fusion360Exporter (public domain).  Differences
 * DataFile properties are read once per file; the log and the summary say where the time went
 * a progress bar with Cancel
 
-Run it from UTILITIES > ADD-INS > Scripts and Add-Ins (Shift+S): pick Exporter, hit Run.
+Run it from UTILITIES > ADD-INS > Scripts and Add-Ins (Shift+S): pick ExporterV2, hit Run.
 """
 import base64
 import hashlib
@@ -644,7 +644,7 @@ def main(ctx: Ctx, progress=None) -> Counter:
     return process_files(ctx, items, progress)
 
 
-PALETTE_ID = 'fujiwara_Exporter_status'
+PALETTE_ID = 'fujiwara_ExporterV2_status'
 cancel_requested = False
 
 
@@ -678,7 +678,7 @@ class StatusPalette:
         html = (Path(__file__).parent / 'resources' / 'status.html').resolve()
         if not html.exists():
             raise FileNotFoundError(html)
-        self._palette = ui.palettes.add(PALETTE_ID, 'Exporter', html.as_uri(), True, True, True, 460, 300)
+        self._palette = ui.palettes.add(PALETTE_ID, 'ExporterV2', html.as_uri(), True, True, True, 460, 300)
         self._palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateFloating
         handler = PaletteEventHandler(self)
         self._palette.incomingFromHTML.add(handler)
@@ -747,7 +747,7 @@ class ProgressDialog:
 
     def _show(self):
         if not self._shown:
-            self._pd.show('Exporter', '%v / %m', 0, max(self.total, 1))
+            self._pd.show('ExporterV2', '%v / %m', 0, max(self.total, 1))
             self._shown = True
 
     def __call__(self, index, total, file):
@@ -1221,7 +1221,7 @@ class DestroyHandler(adsk.core.CommandEventHandler):
             message_box_traceback()
 
 
-CMD_ID = 'fujiwara_Exporter'
+CMD_ID = 'fujiwara_ExporterV2'
 
 
 def run(context):
@@ -1235,7 +1235,7 @@ def run(context):
         cmd_def = cmd_defs.itemById(CMD_ID)
         if cmd_def:
             cmd_def.deleteMe()
-        cmd_def = cmd_defs.addButtonDefinition(CMD_ID, 'Exporter', 'Bulk export f2d/f3d')
+        cmd_def = cmd_defs.addButtonDefinition(CMD_ID, 'ExporterV2', 'Bulk export f2d/f3d')
 
         on_created = CommandCreatedHandler()
         cmd_def.commandCreated.add(on_created)
